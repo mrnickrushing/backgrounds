@@ -1,0 +1,7 @@
+# Case data contains PII/CJI-adjacent material and must never be committed.
+cases/*
+!cases/.gitkeep
+
+__pycache__/
+*.pyc
+.DS_Store
