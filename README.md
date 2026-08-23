@@ -16,9 +16,12 @@ up.
 |---|---|
 | [`tools/evidence_logger`](tools/evidence_logger) | Tamper-evident, hash-chained log of findings (URLs, screenshots, notes). Detects after-the-fact edits and can archive a URL to the Wayback Machine. |
 | [`tools/identity_correlation`](tools/identity_correlation) | Worksheet that records known candidate identifiers next to what was observed on a given account, and scores the overlap so the reasoning is written down the same way every time. |
+| [`tools/image_forensics`](tools/image_forensics) | EXIF metadata extraction and perceptual-hash comparison, to check a photo's capture details and catch a reused/stolen profile photo across accounts. |
 
-Both are single-file Python 3 scripts using only the standard library —
-clone and run, nothing to install.
+`evidence_logger` and `identity_correlation` are single-file Python 3
+scripts using only the standard library — clone and run, nothing to
+install. `image_forensics` additionally requires Pillow (`pip install -r
+tools/image_forensics/requirements.txt`).
 
 ## Quick start
 
@@ -38,9 +41,16 @@ python3 tools/identity_correlation/identity_correlation.py add-account 2026-0142
   --platform Instagram --username jqcandidate90 --url https://instagram.com/jqcandidate90 \
   --examiner "J. Doe" --employer-mention "Acme Corp" --location "Sacramento, CA"
 
+# Check a photo's EXIF data and compare it against another
+python3 tools/image_forensics/image_forensics.py inspect /path/to/photo.jpg \
+  --case 2026-0142 --examiner "J. Doe"
+python3 tools/image_forensics/image_forensics.py compare /path/to/photo.jpg /path/to/other.jpg \
+  --case 2026-0142 --examiner "J. Doe"
+
 # Generate reports for the case file
 python3 tools/evidence_logger/evidence_logger.py report 2026-0142
 python3 tools/identity_correlation/identity_correlation.py report 2026-0142
+python3 tools/image_forensics/image_forensics.py report 2026-0142
 ```
 
 See each tool's README for the full command reference.
@@ -80,10 +90,6 @@ These are documentation aids, not evidentiary authority and not automation:
 
 Ideas for next tools, not yet built:
 
-- Image forensics: EXIF metadata extraction and perceptual-hash comparison,
-  to catch reused/stolen profile photos or the same photo across aliases
-  (note most platforms strip EXIF on upload, so this mainly helps with
-  originals provided directly, e.g. during an interview).
 - PDF export of reports for direct inclusion in a case file.
 - archive.today submission alongside the Wayback Machine.
 
