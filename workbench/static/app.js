@@ -1,34 +1,845 @@
-const state={meta:null,cases:[],current:null,tab:'overview',reportSection:null};
-const app=document.querySelector('#app'),modal=document.querySelector('#modal'),modalForm=document.querySelector('#modalForm');
-const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-const label=s=>String(s).replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
-const fmtDate=s=>s?new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(new Date(`${s}T12:00:00`)):'Not set';
-const request=async(path,options={})=>{const res=await fetch(path,{headers:{'Content-Type':'application/json'},...options});if(res.status===401){location.href='/login';throw new Error('Session expired')}const data=await res.json();if(!res.ok)throw new Error(data.error||'Request failed');return data};
-function toast(message){const node=document.querySelector('#toast');node.textContent=message;node.classList.add('show');setTimeout(()=>node.classList.remove('show'),2200)}
-function status(value){return `<span class="status ${esc(value)}">${esc(label(value))}</span>`}
-function progress(done,total){const pct=total?Math.round(done/total*100):0;return `<div class="progress"><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><small>${done} of ${total} complete</small></div>`}
-function field(name,title,type='text',opts={}){const full=opts.full?' full':'';if(type==='select'){return `<div class="field${full}"><label for="f-${name}">${esc(title)}</label><select id="f-${name}" name="${name}" ${opts.required?'required':''}>${opts.options.map(x=>`<option value="${esc(x.value??x)}">${esc(x.label??label(x))}</option>`).join('')}</select></div>`}if(type==='textarea'){return `<div class="field${full}"><label for="f-${name}">${esc(title)}</label><textarea id="f-${name}" name="${name}" ${opts.required?'required':''} placeholder="${esc(opts.placeholder||'')}">${esc(opts.value||'')}</textarea></div>`}if(type==='checkbox'){return `<label class="check${full}"><input type="checkbox" name="${name}" ${opts.checked?'checked':''}> ${esc(title)}</label>`}return `<div class="field${full}"><label for="f-${name}">${esc(title)}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(opts.value||'')}" ${opts.required?'required':''} placeholder="${esc(opts.placeholder||'')}"></div>`}
-function openModal({title,eyebrow='Add record',body,submit='Save',onSubmit}){document.querySelector('#modalTitle').textContent=title;document.querySelector('#modalEyebrow').textContent=eyebrow;document.querySelector('#modalBody').innerHTML=body;document.querySelector('#modalSubmit').textContent=submit;modalForm.onsubmit=async e=>{e.preventDefault();const button=e.submitter;if(button?.value==='cancel'){modal.close();return}const form=new FormData(modalForm);const data=Object.fromEntries(form.entries());modal.querySelectorAll('input[type=checkbox]').forEach(x=>data[x.name]=x.checked);try{button.disabled=true;await onSubmit(data);modal.close();toast('Saved');await route()}catch(err){toast(err.message)}finally{button.disabled=false}};modal.showModal()}
-function setChrome(name,routeName){document.querySelector('#crumb').textContent=name;document.querySelectorAll('.nav-link').forEach(x=>x.classList.toggle('active',x.dataset.route===routeName))}
-async function loadMeta(){if(!state.meta)state.meta=await request('/api/meta')}
-async function dashboard(){setChrome('Caseload','dashboard');state.cases=await request('/api/cases');const total=state.cases.length,open=state.cases.filter(x=>x.status!=='closed').length,inq=state.cases.reduce((n,x)=>n+x.open_inquiries,0),overdue=state.cases.reduce((n,x)=>n+x.overdue_follow_ups,0);app.innerHTML=`<div class="page-head"><div><p class="eyebrow">Operational overview</p><h1>Active caseload</h1><p>Track required work, follow-ups, and supervisory review.</p></div><button class="secondary" data-action="refresh">Refresh</button></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Awaiting action or response</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Require immediate attention</div></div><div class="stat"><div class="stat-label">Pending review</div><div class="stat-value">${state.cases.filter(x=>x.review_status==='pending').length}</div><div class="stat-detail">Awaiting supervisor action</div></div></div><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p>Search and filter the operational caseload.</p></div><div class="filter-row"><input class="filter" id="caseSearch" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map(x=>`<option value="${x}">${label(x)}</option>`).join('')}</select><select class="filter" id="dueFilter"><option value="all">All due states</option><option value="overdue">Overdue only</option></select></div></div><div id="caseTable">${caseTable(state.cases)}</div></section>`;const apply=()=>{const q=document.querySelector('#caseSearch').value.toLowerCase(),stage=document.querySelector('#caseFilter').value,due=document.querySelector('#dueFilter').value;const rows=state.cases.filter(x=>(!q||`${x.case_id} ${x.investigator} ${(x.tags||[]).join(' ')}`.toLowerCase().includes(q))&&(stage==='all'||x.status===stage)&&(due==='all'||x.overdue_follow_ups>0));document.querySelector('#caseTable').innerHTML=caseTable(rows);bindCaseRows()};document.querySelector('[data-action=refresh]').onclick=route;document.querySelector('#caseSearch').oninput=apply;document.querySelector('#caseFilter').onchange=apply;document.querySelector('#dueFilter').onchange=apply;bindCaseRows()}
-function caseTable(cases){if(!cases.length)return `<div class="empty"><strong>No matching cases</strong>Adjust the queue filters or create a new case.</div>`;return `<div class="table-wrap"><table><thead><tr><th>Case</th><th>Stage / review</th><th>Completion</th><th>Open work</th><th>Target</th><th>Priority</th></tr></thead><tbody>${cases.map(c=>`<tr data-case="${esc(c.case_id)}"><td><span class="case-id">${esc(c.case_id)}</span><span class="subtle">${esc(c.investigator||'Unassigned')} ${(c.tags||[]).map(x=>'· '+esc(x)).join(' ')}</span></td><td>${status(c.status)}<span class="subtle">${esc(label(c.review_status))}</span></td><td>${progress(c.areas_complete,c.areas_total)}</td><td>${c.open_inquiries} inquiries<span class="subtle">${c.overdue_follow_ups} overdue · ${c.open_discrepancies} discrepancies</span></td><td>${fmtDate(c.target_date)}</td><td>${status(c.priority)}</td></tr>`).join('')}</tbody></table></div>`}
-function bindCaseRows(){document.querySelectorAll('[data-case]').forEach(x=>x.onclick=()=>location.hash=`#/case/${encodeURIComponent(x.dataset.case)}`)}
-async function caseView(id){setChrome(id,'dashboard');state.current=await request(`/api/cases/${encodeURIComponent(id)}`);const c=state.current,a=c.audit.metrics,pct=Math.round(a.areas_complete/a.areas_total*100);app.innerHTML=`<div class="case-hero"><div class="case-title"><button class="back" aria-label="Back to caseload">←</button><div><p class="eyebrow">Background investigation</p><h1>${esc(c.case_id)}</h1><div class="case-meta">${esc(c.investigator||'Unassigned investigator')} · Target ${fmtDate(c.target_date)}</div></div></div><div class="case-controls"><select id="caseStatus" aria-label="Case stage">${state.meta.case_statuses.map(x=>`<option value="${x}" ${x===c.status?'selected':''}>${label(x)}</option>`).join('')}</select><button class="primary" data-action="add-inquiry">Add inquiry</button></div></div><div class="case-grid"><section class="panel"><div class="tabs">${[['overview','Overview'],['inquiries','Inquiries'],['discrepancies','Discrepancies'],['interviews','Interviews'],['sources','Sources'],['attachments','Files'],['review','Review'],['report','Report workspace']].map(([x,y])=>`<button class="tab ${state.tab===x?'active':''}" data-tab="${x}">${y}</button>`).join('')}</div><div class="tab-content" id="tabContent"></div></section><aside class="side-column"><section class="panel side-panel"><h3>Readiness</h3><div class="audit-score"><div class="ring" style="--pct:${pct}%"><strong>${pct}%</strong></div><div><strong>${a.areas_complete} / ${a.areas_total} areas</strong><p>${c.audit.errors.length?'Review required before close':pct===100?'No blocking errors':'Complete required coverage'}</p></div></div><div class="issues">${[...c.audit.errors.slice(0,3).map(x=>`<div class="issue error">${esc(x)}</div>`),...c.audit.warnings.slice(0,2).map(x=>`<div class="issue">${esc(x)}</div>`)].join('')||(pct===100?'<div class="issue">No current audit warnings.</div>':'<div class="issue">Full closeout checks activate at quality review.</div>')}</div></section><section class="panel side-panel"><h3>Recent activity</h3><div class="activity">${c.activity.slice(-6).reverse().map(x=>`<div class="activity-item"><div><strong>${esc(label(x.action))}</strong>${esc(x.detail)}<span class="subtle">${new Date(x.at).toLocaleString()}</span></div></div>`).join('')}</div></section></aside></div>`;document.querySelector('.back').onclick=()=>location.hash='#/';document.querySelector('#caseStatus').onchange=async e=>{await request(`/api/cases/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify({status:e.target.value})});toast('Case stage updated');caseView(id)};document.querySelectorAll('[data-tab]').forEach(x=>x.onclick=()=>{state.tab=x.dataset.tab;caseView(id)});document.querySelector('[data-action=add-inquiry]').onclick=addInquiry;renderTab()}
-function renderTab(){const c=state.current,node=document.querySelector('#tabContent');if(state.tab==='overview')node.innerHTML=`<div class="section-toolbar"><div><p class="eyebrow">Required coverage</p><h3>Twelve areas of investigation</h3></div><span class="subtle">Select an area to write its narrative</span></div><div class="area-grid">${Object.entries(state.meta.areas).map(([key,name],i)=>`<div class="area-card ${c.areas[key].status}" data-area="${key}"><span class="area-num">${String(i+1).padStart(2,'0')}</span><div><strong>${esc(name)}</strong><small>${label(c.areas[key].status)}</small></div></div>`).join('')}</div>`;else if(state.tab==='inquiries')node.innerHTML=records('Inquiries','Track every request, response, and follow-up.',c.inquiries,'add-inquiry',x=>`<div class="record"><div><h4>${esc(x.source_label)} <span class="subtle">${esc(x.id)} · ${esc(state.meta.areas[x.area])}</span></h4><p>${esc(label(x.source_type))} · Follow-up ${fmtDate(x.follow_up_due)}${x.response_summary?`<br>${esc(x.response_summary)}`:''}</p></div><div class="record-actions">${status(x.status)}<button class="quiet" data-edit-inquiry="${x.id}">Update</button></div></div>`);else if(state.tab==='discrepancies')node.innerHTML=records('Discrepancies','Keep both accounts, corroboration, and disposition separate.',c.discrepancies,'add-discrepancy',x=>`<div class="record"><div><h4>${esc(x.title)} <span class="subtle">${esc(x.id)} · ${esc(state.meta.areas[x.area])}</span></h4><p><strong>Candidate:</strong> ${esc(x.candidate_statement)}<br><strong>Contrary:</strong> ${esc(x.contrary_information)}</p></div><div class="record-actions">${status(x.status)}<button class="quiet" data-edit-discrepancy="${x.id}">Update</button></div></div>`);else if(state.tab==='interviews')node.innerHTML=records('Interviews','Document the event and approved recording locator.',c.interviews,'add-interview',x=>`<div class="record"><div><h4>${esc(label(x.kind))} <span class="subtle">${esc(x.id)} · ${fmtDate(x.date)}</span></h4><p>${esc(x.participant_role)}${x.notes?` · ${esc(x.notes)}`:''}</p></div><div>${x.uploaded_to_esoph?status('complete'):status('planned')}</div></div>`);else if(state.tab==='sources')node.innerHTML=records('Source register','Reference approved-system records without duplicating sensitive contents.',c.sources,'add-source',x=>`<div class="record"><div><h4>${esc(x.label)} <span class="subtle">${esc(x.id)} · ${esc(label(x.kind))}</span></h4><p>${esc(x.location)}${x.notes?` · ${esc(x.notes)}`:''}</p></div></div>`);else if(state.tab==='attachments')attachmentsWorkspace();else if(state.tab==='review')reviewWorkspace();else reportWorkspace();bindTabActions()}
-async function attachmentsWorkspace(){const c=state.current,node=document.querySelector('#tabContent');node.innerHTML='<div class="empty"><strong>Loading controlled files…</strong></div>';const items=await request(`/api/cases/${encodeURIComponent(c.case_id)}/attachments`);node.innerHTML=`<div class="section-toolbar"><div><p class="eyebrow">Controlled records</p><h3>Attachments and exports</h3><p>Allowed: PDF, PNG, JPEG, and UTF-8 text · 10 MB maximum.</p></div><label class="secondary">Upload file<input id="attachmentInput" type="file" accept="application/pdf,image/png,image/jpeg,text/plain" hidden></label></div><div class="editor-actions"><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/export?format=docx">Export DOCX</a><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/export?format=pdf">Export PDF</a><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/export?format=json">Export JSON package</a></div><div class="record-list">${items.map(x=>`<div class="record"><div><h4>${esc(x.filename)} <span class="subtle">${esc(x.id)}</span></h4><p>${esc(x.media_type)} · ${(x.size/1024).toFixed(1)} KB · SHA-256 ${esc(x.sha256.slice(0,16))}…</p></div><a class="quiet" href="/api/cases/${encodeURIComponent(c.case_id)}/attachments/${encodeURIComponent(x.id)}">Download</a></div>`).join('')||'<div class="empty"><strong>No attachments</strong>Store only records permitted in this environment.</div>'}</div>`;document.querySelector('#attachmentInput').onchange=async e=>{const file=e.target.files[0];if(!file)return;if(file.size>10*1024*1024){toast('File exceeds 10 MB');return}const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});await request(`/api/cases/${encodeURIComponent(c.case_id)}/attachments`,{method:'POST',body:JSON.stringify({filename:file.name,media_type:file.type,content_base64:content})});toast('File uploaded and verified');await attachmentsWorkspace()}}
-function reviewWorkspace(){const c=state.current,r=c.review||{status:'not_submitted',comments:[]},node=document.querySelector('#tabContent');node.innerHTML=`<div class="section-toolbar"><div><p class="eyebrow">Supervisory workflow</p><h3>Review and disposition</h3><p>Current status: ${status(r.status)}</p></div></div><div class="report-editor"><div class="field-row"><label>Priority<select id="reviewPriority">${['low','normal','high','urgent'].map(x=>`<option value="${x}" ${x===(c.priority||'normal')?'selected':''}>${label(x)}</option>`).join('')}</select></label><label>Tags<input id="reviewTags" value="${esc((c.tags||[]).join(', '))}" placeholder="region, expedited"></label></div><label>Review comment<textarea id="reviewComment" placeholder="Document the review decision or requested correction"></textarea></label><div class="editor-actions"><button class="secondary" data-review="save">Save details</button><button class="secondary" data-review="submit">Submit for review</button><button class="secondary" data-review="return">Return for correction</button><button class="primary" data-review="approve">Approve</button></div></div><div class="record-list">${(r.comments||[]).slice().reverse().map(x=>`<div class="record"><div><h4>${esc(x.by)} <span class="subtle">${new Date(x.at).toLocaleString()}</span></h4><p>${esc(x.text)}</p></div></div>`).join('')||'<div class="empty"><strong>No review comments</strong>Comments remain attached to the case.</div>'}</div>`;document.querySelectorAll('[data-review]').forEach(button=>button.onclick=async()=>{const action=button.dataset.review,body={priority:document.querySelector('#reviewPriority').value,tags:document.querySelector('#reviewTags').value.split(',').map(x=>x.trim()).filter(Boolean)};if(action!=='save'){body.review_action=action;body.review_comment=document.querySelector('#reviewComment').value}await request(`/api/cases/${encodeURIComponent(c.case_id)}`,{method:'PATCH',body:JSON.stringify(body)});toast('Review workflow updated');await caseView(c.case_id)})}
-function records(title,subtitle,items,action,render){return `<div class="section-toolbar"><div><h3>${title}</h3><span class="subtle">${subtitle}</span></div><button class="secondary" data-action="${action}">Add</button></div><div class="cards">${items.map(render).join('')||`<div class="empty"><strong>No ${title.toLowerCase()} recorded</strong>Add the first record when work begins.</div>`}</div>`}
-function reportWorkspace(){const c=state.current,sections=[...Object.entries(state.meta.dimensions).map(([key,name])=>({type:'dimensions',key,name})),{type:'bias',key:'bias_relevant_findings',name:'Bias-Relevant Findings'},...Object.entries(state.meta.areas).map(([key,name])=>({type:'areas',key,name}))];if(!state.reportSection)state.reportSection=sections[0];const s=sections.find(x=>x.type===state.reportSection.type&&x.key===state.reportSection.key)||sections[0],data=s.type==='bias'?c.bias_relevant_findings:c[s.type][s.key],complete=Object.values(c.areas).filter(x=>x.status==='complete').length;document.querySelector('#tabContent').innerHTML=`<section class="report-hero"><div><p class="eyebrow">Report draft</p><h3>Build a review-ready case report</h3><p>Write source-grounded sections here, then open the finished print layout for supervisory review or export.</p></div><div class="report-hero-stats"><span><b>${complete}/12</b> areas complete</span><span><b>${c.sources.length}</b> registered sources</span></div><div class="report-hero-actions"><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/report" target="_blank">Open print preview</a><a class="primary" href="/api/cases/${encodeURIComponent(c.case_id)}/export?format=pdf">Download PDF</a></div></section><div class="report-layout"><div class="report-nav"><p class="eyebrow">POST dimensions</p>${sections.map((x,i)=>`${i===10?'<p class="eyebrow">Bias assessment information</p>':''}${i===11?'<p class="eyebrow">Required areas</p>':''}<button class="${x.key===s.key&&x.type===s.type?'active':''}" data-report-type="${x.type}" data-report-key="${x.key}">${esc(x.name)}</button>`).join('')}</div><div class="editor"><div class="editor-heading"><div><p class="eyebrow">Narrative section</p><label>${esc(s.name)}</label></div>${s.type==='areas'?`<select id="sectionStatus" class="filter"><option value="not_started">Not started</option><option value="in_progress">In progress</option><option value="complete">Complete</option><option value="not_applicable">Not applicable</option></select>`:''}</div><textarea id="sectionNarrative" placeholder="Enter source-grounded investigative narrative…">${esc(data.narrative)}</textarea><div class="editor-help">Source identifiers, comma separated. Every material finding should be traceable.</div><input id="sectionSources" class="filter" style="width:100%" value="${esc(data.source_ids.join(', '))}" placeholder="SRC-0001, SRC-0002"><div class="editor-actions"><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/report" target="_blank">Open print preview</a><button class="primary" data-action="save-section">Save section</button></div></div></div>`;if(s.type==='areas')document.querySelector('#sectionStatus').value=data.status;document.querySelectorAll('[data-report-key]').forEach(x=>x.onclick=()=>{state.reportSection={type:x.dataset.reportType,key:x.dataset.reportKey};reportWorkspace()});document.querySelector('[data-action=save-section]').onclick=async()=>{const body={narrative:document.querySelector('#sectionNarrative').value,source_ids:document.querySelector('#sectionSources').value.split(',').map(x=>x.trim()).filter(Boolean)};if(s.type==='areas')body.status=document.querySelector('#sectionStatus').value;const endpoint=s.type==='bias'?'bias':`${s.type}/${s.key}`;await request(`/api/cases/${encodeURIComponent(c.case_id)}/${endpoint}`,{method:'PATCH',body:JSON.stringify(body)});toast('Report section saved');await caseView(c.case_id)}}
-function bindTabActions(){document.querySelectorAll('[data-action=add-inquiry]').forEach(x=>x.onclick=addInquiry);document.querySelector('[data-action=add-discrepancy]')?.addEventListener('click',addDiscrepancy);document.querySelector('[data-action=add-interview]')?.addEventListener('click',addInterview);document.querySelector('[data-action=add-source]')?.addEventListener('click',addSource);document.querySelectorAll('[data-area]').forEach(x=>x.onclick=()=>{state.tab='report';state.reportSection={type:'areas',key:x.dataset.area};caseView(state.current.case_id)});document.querySelectorAll('[data-edit-inquiry]').forEach(x=>x.onclick=()=>editInquiry(x.dataset.editInquiry));document.querySelectorAll('[data-edit-discrepancy]').forEach(x=>x.onclick=()=>editDiscrepancy(x.dataset.editDiscrepancy))}
-function addCase(){openModal({title:'Create case workspace',eyebrow:'Local case',submit:'Create case',body:field('case_id','Case identifier','text',{required:true,placeholder:'2026-0142'})+field('investigator','Investigator')+field('target_date','Target completion','date')+`<div class="field full"><span class="subtle">Use a non-PII case identifier. Candidate information must remain in approved systems.</span></div>`,onSubmit:async d=>{await request('/api/cases',{method:'POST',body:JSON.stringify(d)});location.hash=`#/case/${encodeURIComponent(d.case_id)}`}})}
-function addInquiry(){openModal({title:'Add inquiry',body:field('area','Investigation area','select',{options:Object.entries(state.meta.areas).map(([value,label])=>({value,label}))})+field('source_type','Source type','text',{required:true,placeholder:'Employer, court, reference…'})+field('source_label','Source label','text',{required:true,placeholder:'Use a safe label'})+field('method','Approved method')+field('follow_up_due','Follow-up date','date')+field('release_required','Release required','checkbox')+field('release_attached','Release attached','checkbox'),onSubmit:async d=>{await request(`/api/cases/${encodeURIComponent(state.current.case_id)}/inquiries`,{method:'POST',body:JSON.stringify(d)});state.tab='inquiries';await caseView(state.current.case_id)}})}
-function editInquiry(id){const item=state.current.inquiries.find(x=>x.id===id);openModal({title:`Update ${id}`,body:field('status','Status','select',{options:['planned','sent','received','declined','nonresponsive','not_applicable'].map(x=>({value:x,label:label(x)}),),})+field('follow_up_due','Follow-up date','date',{value:item.follow_up_due})+field('response_summary','Response summary','textarea',{full:true,value:item.response_summary})+field('release_attached','Release attached','checkbox',{checked:item.release_attached}),onSubmit:async d=>{await request(`/api/cases/${encodeURIComponent(state.current.case_id)}/inquiries/${id}`,{method:'PATCH',body:JSON.stringify(d)});await caseView(state.current.case_id)}});document.querySelector('[name=status]').value=item.status}
-function addDiscrepancy(){openModal({title:'Record discrepancy',body:field('title','Issue title','text',{required:true})+field('area','Investigation area','select',{options:Object.entries(state.meta.areas).map(([value,label])=>({value,label}))})+field('candidate_statement','Candidate statement','textarea',{required:true,full:true})+field('contrary_information','Contrary information','textarea',{required:true,full:true})+field('source_ids','Source identifiers','text',{full:true,placeholder:'SRC-0001, SRC-0002'}),onSubmit:async d=>{d.source_ids=d.source_ids.split(',').map(x=>x.trim()).filter(Boolean);await request(`/api/cases/${encodeURIComponent(state.current.case_id)}/discrepancies`,{method:'POST',body:JSON.stringify(d)});state.tab='discrepancies';await caseView(state.current.case_id)}})}
-function editDiscrepancy(id){const item=state.current.discrepancies.find(x=>x.id===id);openModal({title:`Resolve ${id}`,body:field('status','Status','select',{options:['open','candidate_response_received','corroboration_pending','resolved','unresolved'].map(x=>({value:x,label:label(x)}))})+field('candidate_response','Candidate response','textarea',{full:true,value:item.candidate_response})+field('corroboration','Independent corroboration','textarea',{full:true,value:item.corroboration})+field('resolution','Resolution','textarea',{full:true,value:item.resolution}),onSubmit:async d=>{await request(`/api/cases/${encodeURIComponent(state.current.case_id)}/discrepancies/${id}`,{method:'PATCH',body:JSON.stringify(d)});await caseView(state.current.case_id)}});document.querySelector('[name=status]').value=item.status}
-function addInterview(){openModal({title:'Document interview',body:field('kind','Interview type','select',{options:['pre_investigatory','field','reference','employer','discrepancy','other']})+field('date','Date','date',{required:true,value:new Date().toISOString().slice(0,10)})+field('participant_role','Participant role','text',{required:true})+field('recording_locator','Approved recording locator')+field('notes','Notes','textarea',{full:true})+field('uploaded_to_esoph','Uploaded to eSOPH','checkbox'),onSubmit:async d=>{await request(`/api/cases/${encodeURIComponent(state.current.case_id)}/interviews`,{method:'POST',body:JSON.stringify(d)});state.tab='interviews';await caseView(state.current.case_id)}})}
-function addSource(){openModal({title:'Register source',body:field('label','Source label','text',{required:true,placeholder:'Safe descriptive label'})+field('kind','Source type','text',{required:true,placeholder:'Correspondence, record, interview…'})+field('location','Approved-system locator','text',{required:true,full:true,placeholder:'Do not duplicate sensitive contents'})+field('notes','Notes','textarea',{full:true}),onSubmit:async d=>{await request(`/api/cases/${encodeURIComponent(state.current.case_id)}/sources`,{method:'POST',body:JSON.stringify(d)});state.tab='sources';await caseView(state.current.case_id)}})}
-function guide(){setChrome('Desk guide','guide');app.innerHTML=`<div class="guide"><div class="page-head"><div><p class="eyebrow">Field reference</p><h1>Investigation desk guide</h1><p>A working aid only. Current CDCR directives, local procedures, supervisor direction, and approved systems control.</p></div></div><section><h2>Open the case deliberately</h2><ol><li>Confirm the assignment and applicable candidate type.</li><li>Use a non-PII case identifier.</li><li>Review the complete eSOPH PHS and releases.</li><li>Create an inquiry for every disclosed source and required verification.</li><li>Register approved-system locators instead of duplicating sensitive records.</li></ol></section><section><h2>Keep discrepancies evidentiary</h2><ol><li>Record the candidate statement and contrary information separately.</li><li>Identify the source and whether knowledge is firsthand.</li><li>Seek independent corroboration.</li><li>Document the candidate response without promising an outcome.</li><li>Resolve the matter or state why it remains unresolved.</li></ol></section><section><h2>Write for review</h2><ul><li>Separate fact, allegation, observation, and explanation.</li><li>Cite every material finding to a registered source.</li><li>Include mitigating and contradictory information.</li><li>Never turn a nonresponse into adverse evidence.</li><li>Run the quality audit before moving a case to review or closed.</li></ul></section></div>`}
-async function account(){setChrome('Account','account');const me=await request('/api/me');let system={},users=[],audit=[];if(me.role==='admin'){[system,users,audit]=await Promise.all([request('/api/system'),request('/api/users'),request('/api/audit')])}app.innerHTML=`<div class="page-head"><div><p class="eyebrow">Identity and operations</p><h1>${esc(me.display_name||me.username)}</h1><p>${esc(label(me.role))} · Protected account</p></div></div><div class="stat-grid">${me.role==='admin'?`<div class="stat"><div class="stat-label">Database</div><div class="stat-value">${esc(system.database)}</div><div class="stat-detail">Version ${esc(system.version)}</div></div><div class="stat"><div class="stat-label">Active users</div><div class="stat-value">${system.active_users}</div><div class="stat-detail">Role-controlled accounts</div></div><div class="stat"><div class="stat-label">Latest backup</div><div class="stat-value" style="font-size:1rem">${esc(system.latest_backup||'Pending')}</div><div class="stat-detail">Integrity-checked snapshot</div></div>`:''}</div><section class="panel"><div class="panel-head"><div><h2>Account security</h2><p>Manage credentials and multifactor protection.</p></div><div class="filter-row"><button class="secondary" data-account="password">Change password</button><button class="primary" data-account="mfa">Enable MFA</button>${me.role==='admin'?'<button class="secondary" data-account="backup">Create backup</button><button class="primary" data-account="user">Add user</button>':''}</div></div>${me.role==='admin'?`<div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>MFA</th><th>Status</th></tr></thead><tbody>${users.map(x=>`<tr><td>${esc(x.display_name)}<span class="subtle">${esc(x.username)}</span></td><td>${esc(label(x.role))}</td><td>${x.mfa_enabled?'Enabled':'Not enabled'}</td><td>${x.disabled?'Disabled':'Active'}</td></tr>`).join('')}</tbody></table></div>`:''}</section>${me.role==='admin'?`<section class="panel"><div class="panel-head"><div><h2>Recent audit activity</h2><p>Append-only operational events.</p></div></div><div class="record-list">${audit.slice(0,20).map(x=>`<div class="record"><div><h4>${esc(label(x.action))} <span class="subtle">${esc(x.username||'System')}</span></h4><p>${esc(x.case_id||'')} ${esc(x.detail||'')} · ${new Date(x.occurred_at).toLocaleString()}</p></div></div>`).join('')}</div></section>`:''}`;document.querySelector('[data-account=password]').onclick=()=>openModal({title:'Change password',body:field('current_password','Current password','password',{required:true})+field('new_password','New password','password',{required:true,placeholder:'At least 12 characters'}),submit:'Change password',onSubmit:async d=>{await request('/api/change-password',{method:'POST',body:JSON.stringify(d)});location.href='/login'}});document.querySelector('[data-account=mfa]').onclick=async()=>{const setup=await request('/api/mfa/setup',{method:'POST',body:'{}'});openModal({title:'Enable authenticator MFA',body:`<div class="field full"><label>Authenticator secret</label><input readonly value="${esc(setup.secret)}"><span class="subtle">Add this secret to an authenticator app, then enter its six-digit code.</span></div>`+field('code','Verification code','text',{required:true}),submit:'Enable MFA',onSubmit:async d=>{await request('/api/mfa/enable',{method:'POST',body:JSON.stringify({secret:setup.secret,code:d.code})});toast('MFA enabled')}})};document.querySelector('[data-account=backup]')?.addEventListener('click',async()=>{await request('/api/backups',{method:'POST',body:'{}'});toast('Verified backup created');await account()});document.querySelector('[data-account=user]')?.addEventListener('click',()=>openModal({title:'Add workbench user',body:field('username','Username','text',{required:true})+field('display_name','Display name','text',{required:true})+field('password','Temporary password','password',{required:true,placeholder:'At least 12 characters'})+field('role','Role','select',{options:['investigator','supervisor','reviewer','admin']}),submit:'Create user',onSubmit:async d=>{await request('/api/users',{method:'POST',body:JSON.stringify(d)});await account()}}))}
-async function route(){try{await loadMeta();const parts=location.hash.replace(/^#\/?/,'').split('/').filter(Boolean);if(parts[0]==='case'&&parts[1])await caseView(decodeURIComponent(parts[1]));else if(parts[0]==='guide')guide();else if(parts[0]==='account')await account();else await dashboard()}catch(err){app.innerHTML=`<div class="empty"><strong>Unable to load the workbench</strong>${esc(err.message)}</div>`}}
-document.querySelector('#newCaseButton').onclick=addCase;document.querySelector('#menuButton').onclick=()=>document.querySelector('.sidebar').classList.toggle('open');document.querySelector('#today').textContent=new Intl.DateTimeFormat(undefined,{weekday:'short',month:'short',day:'numeric'}).format(new Date());window.addEventListener('hashchange',route);route();
+const state = {
+  meta: null,
+  cases: [],
+  current: null,
+  tab: "overview",
+  reportSection: null,
+};
+const app = document.querySelector("#app"),
+  modal = document.querySelector("#modal"),
+  modalForm = document.querySelector("#modalForm");
+const esc = (s) =>
+  String(s ?? "").replace(
+    /[&<>'"]/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[
+        c
+      ],
+  );
+const label = (s) =>
+  String(s)
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+const fmtDate = (s) =>
+  s
+    ? new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }).format(new Date(`${s}T12:00:00`))
+    : "Not set";
+const request = async (path, options = {}) => {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (res.status === 401) {
+    location.href = "/login";
+    throw new Error("Session expired");
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Request failed");
+  return data;
+};
+function toast(message) {
+  const node = document.querySelector("#toast");
+  node.textContent = message;
+  node.classList.add("show");
+  setTimeout(() => node.classList.remove("show"), 2200);
+}
+function status(value) {
+  return `<span class="status ${esc(value)}">${esc(label(value))}</span>`;
+}
+function progress(done, total) {
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  return `<div class="progress"><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><small>${done} of ${total} complete</small></div>`;
+}
+function field(name, title, type = "text", opts = {}) {
+  const full = opts.full ? " full" : "";
+  if (type === "select") {
+    return `<div class="field${full}"><label for="f-${name}">${esc(title)}</label><select id="f-${name}" name="${name}" ${opts.required ? "required" : ""}>${opts.options.map((x) => `<option value="${esc(x.value ?? x)}">${esc(x.label ?? label(x))}</option>`).join("")}</select></div>`;
+  }
+  if (type === "textarea") {
+    return `<div class="field${full}"><label for="f-${name}">${esc(title)}</label><textarea id="f-${name}" name="${name}" ${opts.required ? "required" : ""} placeholder="${esc(opts.placeholder || "")}">${esc(opts.value || "")}</textarea></div>`;
+  }
+  if (type === "checkbox") {
+    return `<label class="check${full}"><input type="checkbox" name="${name}" ${opts.checked ? "checked" : ""}> ${esc(title)}</label>`;
+  }
+  return `<div class="field${full}"><label for="f-${name}">${esc(title)}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(opts.value || "")}" ${opts.required ? "required" : ""} placeholder="${esc(opts.placeholder || "")}"></div>`;
+}
+function openModal({
+  title,
+  eyebrow = "Add record",
+  body,
+  submit = "Save",
+  onSubmit,
+}) {
+  document.querySelector("#modalTitle").textContent = title;
+  document.querySelector("#modalEyebrow").textContent = eyebrow;
+  document.querySelector("#modalBody").innerHTML = body;
+  document.querySelector("#modalSubmit").textContent = submit;
+  modalForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const button = e.submitter;
+    if (button?.value === "cancel") {
+      modal.close();
+      return;
+    }
+    const form = new FormData(modalForm);
+    const data = Object.fromEntries(form.entries());
+    modal
+      .querySelectorAll("input[type=checkbox]")
+      .forEach((x) => (data[x.name] = x.checked));
+    try {
+      button.disabled = true;
+      await onSubmit(data);
+      modal.close();
+      toast("Saved");
+      await route();
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      button.disabled = false;
+    }
+  };
+  modal.showModal();
+}
+function setChrome(name, routeName) {
+  document.querySelector("#crumb").textContent = name;
+  document
+    .querySelectorAll(".nav-link")
+    .forEach((x) =>
+      x.classList.toggle("active", x.dataset.route === routeName),
+    );
+}
+async function loadMeta() {
+  if (!state.meta) state.meta = await request("/api/meta");
+}
+async function dashboard() {
+  setChrome("Caseload", "dashboard");
+  state.cases = await request("/api/cases");
+  const total = state.cases.length,
+    open = state.cases.filter((x) => x.status !== "closed").length,
+    inq = state.cases.reduce((n, x) => n + x.open_inquiries, 0),
+    overdue = state.cases.reduce((n, x) => n + x.overdue_follow_ups, 0);
+  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Operational overview</p><h1>Active caseload</h1><p>Track required work, follow-ups, and supervisory review.</p></div><button class="secondary" data-action="refresh">Refresh</button></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Awaiting action or response</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Require immediate attention</div></div><div class="stat"><div class="stat-label">Pending review</div><div class="stat-value">${state.cases.filter((x) => x.review_status === "pending").length}</div><div class="stat-detail">Awaiting supervisor action</div></div></div><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p>Search and filter the operational caseload.</p></div><div class="filter-row"><input class="filter" id="caseSearch" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}">${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all">All due states</option><option value="overdue">Overdue only</option></select></div></div><div id="caseTable">${caseTable(state.cases)}</div></section>`;
+  const apply = () => {
+    const q = document.querySelector("#caseSearch").value.toLowerCase(),
+      stage = document.querySelector("#caseFilter").value,
+      due = document.querySelector("#dueFilter").value;
+    const rows = state.cases.filter(
+      (x) =>
+        (!q ||
+          `${x.case_id} ${x.investigator} ${(x.tags || []).join(" ")}`
+            .toLowerCase()
+            .includes(q)) &&
+        (stage === "all" || x.status === stage) &&
+        (due === "all" || x.overdue_follow_ups > 0),
+    );
+    document.querySelector("#caseTable").innerHTML = caseTable(rows);
+    bindCaseRows();
+  };
+  document.querySelector("[data-action=refresh]").onclick = route;
+  document.querySelector("#caseSearch").oninput = apply;
+  document.querySelector("#caseFilter").onchange = apply;
+  document.querySelector("#dueFilter").onchange = apply;
+  bindCaseRows();
+}
+function caseTable(cases) {
+  if (!cases.length)
+    return `<div class="empty"><strong>No matching cases</strong>Adjust the queue filters or create a new case.</div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Case</th><th>Stage / review</th><th>Completion</th><th>Open work</th><th>Target</th><th>Priority</th></tr></thead><tbody>${cases.map((c) => `<tr data-case="${esc(c.case_id)}"><td><span class="case-id">${esc(c.case_id)}</span><span class="subtle">${esc(c.investigator || "Unassigned")} ${(c.tags || []).map((x) => "· " + esc(x)).join(" ")}</span></td><td>${status(c.status)}<span class="subtle">${esc(label(c.review_status))}</span></td><td>${progress(c.areas_complete, c.areas_total)}</td><td>${c.open_inquiries} inquiries<span class="subtle">${c.overdue_follow_ups} overdue · ${c.open_discrepancies} discrepancies</span></td><td>${fmtDate(c.target_date)}</td><td>${status(c.priority)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function bindCaseRows() {
+  document
+    .querySelectorAll("[data-case]")
+    .forEach(
+      (x) =>
+        (x.onclick = () =>
+          (location.hash = `#/case/${encodeURIComponent(x.dataset.case)}`)),
+    );
+}
+async function caseView(id) {
+  setChrome(id, "dashboard");
+  state.current = await request(`/api/cases/${encodeURIComponent(id)}`);
+  const c = state.current,
+    a = c.audit.metrics,
+    pct = Math.round((a.areas_complete / a.areas_total) * 100);
+  app.innerHTML = `<div class="case-hero"><div class="case-title"><button class="back" aria-label="Back to caseload">←</button><div><p class="eyebrow">Background investigation</p><h1>${esc(c.case_id)}</h1><div class="case-meta">${esc(c.investigator || "Unassigned investigator")} · Target ${fmtDate(c.target_date)}</div></div></div><div class="case-controls"><select id="caseStatus" aria-label="Case stage">${state.meta.case_statuses.map((x) => `<option value="${x}" ${x === c.status ? "selected" : ""}>${label(x)}</option>`).join("")}</select><button class="primary" data-action="add-inquiry">Add inquiry</button></div></div><div class="case-grid"><section class="panel"><div class="tabs">${[
+    ["overview", "Overview"],
+    ["inquiries", "Inquiries"],
+    ["discrepancies", "Discrepancies"],
+    ["interviews", "Interviews"],
+    ["sources", "Sources"],
+    ["attachments", "Files"],
+    ["review", "Review"],
+    ["report", "Report workspace"],
+  ]
+    .map(
+      ([x, y]) =>
+        `<button class="tab ${state.tab === x ? "active" : ""}" data-tab="${x}">${y}</button>`,
+    )
+    .join(
+      "",
+    )}</div><div class="tab-content" id="tabContent"></div></section><aside class="side-column"><section class="panel side-panel"><h3>Readiness</h3><div class="audit-score"><div class="ring" style="--pct:${pct}%"><strong>${pct}%</strong></div><div><strong>${a.areas_complete} / ${a.areas_total} areas</strong><p>${c.audit.errors.length ? "Review required before close" : pct === 100 ? "No blocking errors" : "Complete required coverage"}</p></div></div><div class="issues">${[...c.audit.errors.slice(0, 3).map((x) => `<div class="issue error">${esc(x)}</div>`), ...c.audit.warnings.slice(0, 2).map((x) => `<div class="issue">${esc(x)}</div>`)].join("") || (pct === 100 ? '<div class="issue">No current audit warnings.</div>' : '<div class="issue">Full closeout checks activate at quality review.</div>')}</div></section><section class="panel side-panel"><h3>Recent activity</h3><div class="activity">${c.activity
+    .slice(-6)
+    .reverse()
+    .map(
+      (x) =>
+        `<div class="activity-item"><div><strong>${esc(label(x.action))}</strong>${esc(x.detail)}<span class="subtle">${new Date(x.at).toLocaleString()}</span></div></div>`,
+    )
+    .join("")}</div></section></aside></div>`;
+  document.querySelector(".back").onclick = () => (location.hash = "#/");
+  document.querySelector("#caseStatus").onchange = async (e) => {
+    await request(`/api/cases/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: e.target.value }),
+    });
+    toast("Case stage updated");
+    caseView(id);
+  };
+  document.querySelectorAll("[data-tab]").forEach(
+    (x) =>
+      (x.onclick = () => {
+        state.tab = x.dataset.tab;
+        caseView(id);
+      }),
+  );
+  document.querySelector("[data-action=add-inquiry]").onclick = addInquiry;
+  renderTab();
+}
+function renderTab() {
+  const c = state.current,
+    node = document.querySelector("#tabContent");
+  if (state.tab === "overview")
+    node.innerHTML = `<div class="section-toolbar"><div><p class="eyebrow">Required coverage</p><h3>Twelve areas of investigation</h3></div><span class="subtle">Select an area to write its narrative</span></div><div class="area-grid">${Object.entries(
+      state.meta.areas,
+    )
+      .map(
+        ([key, name], i) =>
+          `<div class="area-card ${c.areas[key].status}" data-area="${key}"><span class="area-num">${String(i + 1).padStart(2, "0")}</span><div><strong>${esc(name)}</strong><small>${label(c.areas[key].status)}</small></div></div>`,
+      )
+      .join("")}</div>`;
+  else if (state.tab === "inquiries")
+    node.innerHTML = records(
+      "Inquiries",
+      "Track every request, response, and follow-up.",
+      c.inquiries,
+      "add-inquiry",
+      (x) =>
+        `<div class="record"><div><h4>${esc(x.source_label)} <span class="subtle">${esc(x.id)} · ${esc(state.meta.areas[x.area])}</span></h4><p>${esc(label(x.source_type))} · Follow-up ${fmtDate(x.follow_up_due)}${x.response_summary ? `<br>${esc(x.response_summary)}` : ""}</p></div><div class="record-actions">${status(x.status)}<button class="quiet" data-edit-inquiry="${x.id}">Update</button></div></div>`,
+    );
+  else if (state.tab === "discrepancies")
+    node.innerHTML = records(
+      "Discrepancies",
+      "Keep both accounts, corroboration, and disposition separate.",
+      c.discrepancies,
+      "add-discrepancy",
+      (x) =>
+        `<div class="record"><div><h4>${esc(x.title)} <span class="subtle">${esc(x.id)} · ${esc(state.meta.areas[x.area])}</span></h4><p><strong>Candidate:</strong> ${esc(x.candidate_statement)}<br><strong>Contrary:</strong> ${esc(x.contrary_information)}</p></div><div class="record-actions">${status(x.status)}<button class="quiet" data-edit-discrepancy="${x.id}">Update</button></div></div>`,
+    );
+  else if (state.tab === "interviews")
+    node.innerHTML = records(
+      "Interviews",
+      "Document the event and approved recording locator.",
+      c.interviews,
+      "add-interview",
+      (x) =>
+        `<div class="record"><div><h4>${esc(label(x.kind))} <span class="subtle">${esc(x.id)} · ${fmtDate(x.date)}</span></h4><p>${esc(x.participant_role)}${x.notes ? ` · ${esc(x.notes)}` : ""}</p></div><div>${x.uploaded_to_esoph ? status("complete") : status("planned")}</div></div>`,
+    );
+  else if (state.tab === "sources")
+    node.innerHTML = records(
+      "Source register",
+      "Reference approved-system records without duplicating sensitive contents.",
+      c.sources,
+      "add-source",
+      (x) =>
+        `<div class="record"><div><h4>${esc(x.label)} <span class="subtle">${esc(x.id)} · ${esc(label(x.kind))}</span></h4><p>${esc(x.location)}${x.notes ? ` · ${esc(x.notes)}` : ""}</p></div></div>`,
+    );
+  else if (state.tab === "attachments") attachmentsWorkspace();
+  else if (state.tab === "review") reviewWorkspace();
+  else reportWorkspace();
+  bindTabActions();
+  if (state.tab === "overview") renderChecklist(c);
+}
+
+function renderChecklist(c) {
+  const items = c.audit.checklist || [];
+  const incomplete = items.filter((item) => !item.complete).length;
+  document
+    .querySelector("#tabContent")
+    ?.insertAdjacentHTML(
+      "afterbegin",
+      `<section class="readiness-plan"><div><p class="eyebrow">Guided case plan</p><h3>${incomplete ? `${incomplete} steps still need attention` : "Case is ready for final review"}</h3><p>Use this sequence to keep the file reviewable. It does not replace agency policy or supervisor direction.</p></div><div class="checklist">${items.map((item) => `<div class="check-item ${item.complete ? "complete" : ""}"><span>${item.complete ? "✓" : "○"}</span><div><strong>${esc(item.label)}</strong>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></div>`).join("")}</div></section>`,
+    );
+}
+async function attachmentsWorkspace() {
+  const c = state.current,
+    node = document.querySelector("#tabContent");
+  node.innerHTML =
+    '<div class="empty"><strong>Loading controlled files…</strong></div>';
+  const items = await request(
+    `/api/cases/${encodeURIComponent(c.case_id)}/attachments`,
+  );
+  node.innerHTML = `<div class="section-toolbar"><div><p class="eyebrow">Controlled records</p><h3>Attachments and exports</h3><p>Allowed: PDF, PNG, JPEG, and UTF-8 text · 10 MB maximum.</p></div><label class="secondary">Upload file<input id="attachmentInput" type="file" accept="application/pdf,image/png,image/jpeg,text/plain" hidden></label></div><div class="editor-actions"><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/export?format=docx">Export DOCX</a><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/export?format=pdf">Export PDF</a><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/export?format=json">Export JSON package</a></div><div class="record-list">${items.map((x) => `<div class="record"><div><h4>${esc(x.filename)} <span class="subtle">${esc(x.id)}</span></h4><p>${esc(x.media_type)} · ${(x.size / 1024).toFixed(1)} KB · SHA-256 ${esc(x.sha256.slice(0, 16))}…</p></div><a class="quiet" href="/api/cases/${encodeURIComponent(c.case_id)}/attachments/${encodeURIComponent(x.id)}">Download</a></div>`).join("") || '<div class="empty"><strong>No attachments</strong>Store only records permitted in this environment.</div>'}</div>`;
+  document.querySelector("#attachmentInput").onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      toast("File exceeds 10 MB");
+      return;
+    }
+    const content = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    await request(`/api/cases/${encodeURIComponent(c.case_id)}/attachments`, {
+      method: "POST",
+      body: JSON.stringify({
+        filename: file.name,
+        media_type: file.type,
+        content_base64: content,
+      }),
+    });
+    toast("File uploaded and verified");
+    await attachmentsWorkspace();
+  };
+}
+function reviewWorkspace() {
+  const c = state.current,
+    r = c.review || { status: "not_submitted", comments: [] },
+    node = document.querySelector("#tabContent");
+  node.innerHTML = `<div class="section-toolbar"><div><p class="eyebrow">Supervisory workflow</p><h3>Review and disposition</h3><p>Current status: ${status(r.status)}</p></div></div><div class="report-editor"><div class="field-row"><label>Priority<select id="reviewPriority">${["low", "normal", "high", "urgent"].map((x) => `<option value="${x}" ${x === (c.priority || "normal") ? "selected" : ""}>${label(x)}</option>`).join("")}</select></label><label>Tags<input id="reviewTags" value="${esc((c.tags || []).join(", "))}" placeholder="region, expedited"></label></div><label>Review comment<textarea id="reviewComment" placeholder="Document the review decision or requested correction"></textarea></label><div class="editor-actions"><button class="secondary" data-review="save">Save details</button><button class="secondary" data-review="submit">Submit for review</button><button class="secondary" data-review="return">Return for correction</button><button class="primary" data-review="approve">Approve</button></div></div><div class="record-list">${
+    (r.comments || [])
+      .slice()
+      .reverse()
+      .map(
+        (x) =>
+          `<div class="record"><div><h4>${esc(x.by)} <span class="subtle">${new Date(x.at).toLocaleString()}</span></h4><p>${esc(x.text)}</p></div></div>`,
+      )
+      .join("") ||
+    '<div class="empty"><strong>No review comments</strong>Comments remain attached to the case.</div>'
+  }</div>`;
+  document.querySelectorAll("[data-review]").forEach(
+    (button) =>
+      (button.onclick = async () => {
+        const action = button.dataset.review,
+          body = {
+            priority: document.querySelector("#reviewPriority").value,
+            tags: document
+              .querySelector("#reviewTags")
+              .value.split(",")
+              .map((x) => x.trim())
+              .filter(Boolean),
+          };
+        if (action !== "save") {
+          body.review_action = action;
+          body.review_comment = document.querySelector("#reviewComment").value;
+        }
+        await request(`/api/cases/${encodeURIComponent(c.case_id)}`, {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        });
+        toast("Review workflow updated");
+        await caseView(c.case_id);
+      }),
+  );
+}
+function records(title, subtitle, items, action, render) {
+  return `<div class="section-toolbar"><div><h3>${title}</h3><span class="subtle">${subtitle}</span></div><button class="secondary" data-action="${action}">Add</button></div><div class="cards">${items.map(render).join("") || `<div class="empty"><strong>No ${title.toLowerCase()} recorded</strong>Add the first record when work begins.</div>`}</div>`;
+}
+function reportWorkspace() {
+  const c = state.current,
+    sections = [
+      ...Object.entries(state.meta.dimensions).map(([key, name]) => ({
+        type: "dimensions",
+        key,
+        name,
+      })),
+      {
+        type: "bias",
+        key: "bias_relevant_findings",
+        name: "Bias-Relevant Findings",
+      },
+      ...Object.entries(state.meta.areas).map(([key, name]) => ({
+        type: "areas",
+        key,
+        name,
+      })),
+    ];
+  if (!state.reportSection) state.reportSection = sections[0];
+  const s =
+      sections.find(
+        (x) =>
+          x.type === state.reportSection.type &&
+          x.key === state.reportSection.key,
+      ) || sections[0],
+    data = s.type === "bias" ? c.bias_relevant_findings : c[s.type][s.key],
+    complete = Object.values(c.areas).filter(
+      (x) => x.status === "complete",
+    ).length;
+  document.querySelector("#tabContent").innerHTML =
+    `<section class="report-hero"><div><p class="eyebrow">Report draft</p><h3>Build a review-ready case report</h3><p>Write source-grounded sections here, then open the finished print layout for supervisory review or export.</p></div><div class="report-hero-stats"><span><b>${complete}/12</b> areas complete</span><span><b>${c.sources.length}</b> registered sources</span></div><div class="report-hero-actions"><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/report" target="_blank">Open print preview</a><a class="primary" href="/api/cases/${encodeURIComponent(c.case_id)}/export?format=pdf">Download PDF</a></div></section><div class="report-layout"><div class="report-nav"><p class="eyebrow">POST dimensions</p>${sections.map((x, i) => `${i === 10 ? '<p class="eyebrow">Bias assessment information</p>' : ""}${i === 11 ? '<p class="eyebrow">Required areas</p>' : ""}<button class="${x.key === s.key && x.type === s.type ? "active" : ""}" data-report-type="${x.type}" data-report-key="${x.key}">${esc(x.name)}</button>`).join("")}</div><div class="editor"><div class="editor-heading"><div><p class="eyebrow">Narrative section</p><label>${esc(s.name)}</label></div>${s.type === "areas" ? `<select id="sectionStatus" class="filter"><option value="not_started">Not started</option><option value="in_progress">In progress</option><option value="complete">Complete</option><option value="not_applicable">Not applicable</option></select>` : ""}</div><textarea id="sectionNarrative" placeholder="Enter source-grounded investigative narrative…">${esc(data.narrative)}</textarea><div class="editor-help">Source identifiers, comma separated. Every material finding should be traceable.</div><input id="sectionSources" class="filter" style="width:100%" value="${esc(data.source_ids.join(", "))}" placeholder="SRC-0001, SRC-0002"><div class="editor-actions"><a class="secondary" href="/api/cases/${encodeURIComponent(c.case_id)}/report" target="_blank">Open print preview</a><button class="primary" data-action="save-section">Save section</button></div></div></div>`;
+  if (s.type === "areas")
+    document.querySelector("#sectionStatus").value = data.status;
+  document.querySelectorAll("[data-report-key]").forEach(
+    (x) =>
+      (x.onclick = () => {
+        state.reportSection = {
+          type: x.dataset.reportType,
+          key: x.dataset.reportKey,
+        };
+        reportWorkspace();
+      }),
+  );
+  document.querySelector("[data-action=save-section]").onclick = async () => {
+    const body = {
+      narrative: document.querySelector("#sectionNarrative").value,
+      source_ids: document
+        .querySelector("#sectionSources")
+        .value.split(",")
+        .map((x) => x.trim())
+        .filter(Boolean),
+    };
+    if (s.type === "areas")
+      body.status = document.querySelector("#sectionStatus").value;
+    const endpoint = s.type === "bias" ? "bias" : `${s.type}/${s.key}`;
+    await request(`/api/cases/${encodeURIComponent(c.case_id)}/${endpoint}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+    toast("Report section saved");
+    await caseView(c.case_id);
+  };
+}
+function bindTabActions() {
+  document
+    .querySelectorAll("[data-action=add-inquiry]")
+    .forEach((x) => (x.onclick = addInquiry));
+  document
+    .querySelector("[data-action=add-discrepancy]")
+    ?.addEventListener("click", addDiscrepancy);
+  document
+    .querySelector("[data-action=add-interview]")
+    ?.addEventListener("click", addInterview);
+  document
+    .querySelector("[data-action=add-source]")
+    ?.addEventListener("click", addSource);
+  document.querySelectorAll("[data-area]").forEach(
+    (x) =>
+      (x.onclick = () => {
+        state.tab = "report";
+        state.reportSection = { type: "areas", key: x.dataset.area };
+        caseView(state.current.case_id);
+      }),
+  );
+  document
+    .querySelectorAll("[data-edit-inquiry]")
+    .forEach((x) => (x.onclick = () => editInquiry(x.dataset.editInquiry)));
+  document
+    .querySelectorAll("[data-edit-discrepancy]")
+    .forEach(
+      (x) => (x.onclick = () => editDiscrepancy(x.dataset.editDiscrepancy)),
+    );
+}
+function addCase() {
+  openModal({
+    title: "Create case workspace",
+    eyebrow: "Local case",
+    submit: "Create case",
+    body:
+      field("case_id", "Case identifier", "text", {
+        required: true,
+        placeholder: "2026-0142",
+      }) +
+      field("investigator", "Investigator") +
+      field("target_date", "Target completion", "date") +
+      `<div class="field full"><span class="subtle">Use a non-PII case identifier. Candidate information must remain in approved systems.</span></div>`,
+    onSubmit: async (d) => {
+      await request("/api/cases", { method: "POST", body: JSON.stringify(d) });
+      location.hash = `#/case/${encodeURIComponent(d.case_id)}`;
+    },
+  });
+}
+function addInquiry() {
+  openModal({
+    title: "Add inquiry",
+    body:
+      field("area", "Investigation area", "select", {
+        options: Object.entries(state.meta.areas).map(([value, label]) => ({
+          value,
+          label,
+        })),
+      }) +
+      field("source_type", "Source type", "text", {
+        required: true,
+        placeholder: "Employer, court, reference…",
+      }) +
+      field("source_label", "Source label", "text", {
+        required: true,
+        placeholder: "Use a safe label",
+      }) +
+      field("method", "Approved method") +
+      field("follow_up_due", "Follow-up date", "date") +
+      field("release_required", "Release required", "checkbox") +
+      field("release_attached", "Release attached", "checkbox"),
+    onSubmit: async (d) => {
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/inquiries`,
+        { method: "POST", body: JSON.stringify(d) },
+      );
+      state.tab = "inquiries";
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function editInquiry(id) {
+  const item = state.current.inquiries.find((x) => x.id === id);
+  openModal({
+    title: `Update ${id}`,
+    body:
+      field("status", "Status", "select", {
+        options: [
+          "planned",
+          "sent",
+          "received",
+          "declined",
+          "nonresponsive",
+          "not_applicable",
+        ].map((x) => ({ value: x, label: label(x) })),
+      }) +
+      field("follow_up_due", "Follow-up date", "date", {
+        value: item.follow_up_due,
+      }) +
+      field("response_summary", "Response summary", "textarea", {
+        full: true,
+        value: item.response_summary,
+      }) +
+      field("release_attached", "Release attached", "checkbox", {
+        checked: item.release_attached,
+      }),
+    onSubmit: async (d) => {
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/inquiries/${id}`,
+        { method: "PATCH", body: JSON.stringify(d) },
+      );
+      await caseView(state.current.case_id);
+    },
+  });
+  document.querySelector("[name=status]").value = item.status;
+}
+function addDiscrepancy() {
+  openModal({
+    title: "Record discrepancy",
+    body:
+      field("title", "Issue title", "text", { required: true }) +
+      field("area", "Investigation area", "select", {
+        options: Object.entries(state.meta.areas).map(([value, label]) => ({
+          value,
+          label,
+        })),
+      }) +
+      field("candidate_statement", "Candidate statement", "textarea", {
+        required: true,
+        full: true,
+      }) +
+      field("contrary_information", "Contrary information", "textarea", {
+        required: true,
+        full: true,
+      }) +
+      field("source_ids", "Source identifiers", "text", {
+        full: true,
+        placeholder: "SRC-0001, SRC-0002",
+      }),
+    onSubmit: async (d) => {
+      d.source_ids = d.source_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/discrepancies`,
+        { method: "POST", body: JSON.stringify(d) },
+      );
+      state.tab = "discrepancies";
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function editDiscrepancy(id) {
+  const item = state.current.discrepancies.find((x) => x.id === id);
+  openModal({
+    title: `Resolve ${id}`,
+    body:
+      field("status", "Status", "select", {
+        options: [
+          "open",
+          "candidate_response_received",
+          "corroboration_pending",
+          "resolved",
+          "unresolved",
+        ].map((x) => ({ value: x, label: label(x) })),
+      }) +
+      field("candidate_response", "Candidate response", "textarea", {
+        full: true,
+        value: item.candidate_response,
+      }) +
+      field("corroboration", "Independent corroboration", "textarea", {
+        full: true,
+        value: item.corroboration,
+      }) +
+      field("resolution", "Resolution", "textarea", {
+        full: true,
+        value: item.resolution,
+      }),
+    onSubmit: async (d) => {
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/discrepancies/${id}`,
+        { method: "PATCH", body: JSON.stringify(d) },
+      );
+      await caseView(state.current.case_id);
+    },
+  });
+  document.querySelector("[name=status]").value = item.status;
+}
+function addInterview() {
+  openModal({
+    title: "Document interview",
+    body:
+      field("kind", "Interview type", "select", {
+        options: [
+          "pre_investigatory",
+          "field",
+          "reference",
+          "employer",
+          "discrepancy",
+          "other",
+        ],
+      }) +
+      field("date", "Date", "date", {
+        required: true,
+        value: new Date().toISOString().slice(0, 10),
+      }) +
+      field("participant_role", "Participant role", "text", {
+        required: true,
+      }) +
+      field("recording_locator", "Approved recording locator") +
+      field("notes", "Notes", "textarea", { full: true }) +
+      field("uploaded_to_esoph", "Uploaded to eSOPH", "checkbox"),
+    onSubmit: async (d) => {
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/interviews`,
+        { method: "POST", body: JSON.stringify(d) },
+      );
+      state.tab = "interviews";
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function addSource() {
+  openModal({
+    title: "Register source",
+    body:
+      field("label", "Source label", "text", {
+        required: true,
+        placeholder: "Safe descriptive label",
+      }) +
+      field("kind", "Source type", "text", {
+        required: true,
+        placeholder: "Correspondence, record, interview…",
+      }) +
+      field("location", "Approved-system locator", "text", {
+        required: true,
+        full: true,
+        placeholder: "Do not duplicate sensitive contents",
+      }) +
+      field("notes", "Notes", "textarea", { full: true }),
+    onSubmit: async (d) => {
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/sources`,
+        { method: "POST", body: JSON.stringify(d) },
+      );
+      state.tab = "sources";
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function guide() {
+  setChrome("Desk guide", "guide");
+  app.innerHTML = `<div class="guide"><div class="page-head"><div><p class="eyebrow">Field reference</p><h1>Investigation desk guide</h1><p>A working aid only. Current CDCR directives, local procedures, supervisor direction, and approved systems control.</p></div></div><section><h2>Open the case deliberately</h2><ol><li>Confirm the assignment and applicable candidate type.</li><li>Use a non-PII case identifier.</li><li>Review the complete eSOPH PHS and releases.</li><li>Create an inquiry for every disclosed source and required verification.</li><li>Register approved-system locators instead of duplicating sensitive records.</li></ol></section><section><h2>Keep discrepancies evidentiary</h2><ol><li>Record the candidate statement and contrary information separately.</li><li>Identify the source and whether knowledge is firsthand.</li><li>Seek independent corroboration.</li><li>Document the candidate response without promising an outcome.</li><li>Resolve the matter or state why it remains unresolved.</li></ol></section><section><h2>Write for review</h2><ul><li>Separate fact, allegation, observation, and explanation.</li><li>Cite every material finding to a registered source.</li><li>Include mitigating and contradictory information.</li><li>Never turn a nonresponse into adverse evidence.</li><li>Run the quality audit before moving a case to review or closed.</li></ul></section></div>`;
+}
+async function account() {
+  setChrome("Account", "account");
+  const me = await request("/api/me");
+  let system = {},
+    users = [],
+    audit = [];
+  if (me.role === "admin") {
+    [system, users, audit] = await Promise.all([
+      request("/api/system"),
+      request("/api/users"),
+      request("/api/audit"),
+    ]);
+  }
+  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Identity and operations</p><h1>${esc(me.display_name || me.username)}</h1><p>${esc(label(me.role))} · Protected account</p></div></div><div class="stat-grid">${me.role === "admin" ? `<div class="stat"><div class="stat-label">Database</div><div class="stat-value">${esc(system.database)}</div><div class="stat-detail">Version ${esc(system.version)}</div></div><div class="stat"><div class="stat-label">Active users</div><div class="stat-value">${system.active_users}</div><div class="stat-detail">Role-controlled accounts</div></div><div class="stat"><div class="stat-label">Latest backup</div><div class="stat-value" style="font-size:1rem">${esc(system.latest_backup || "Pending")}</div><div class="stat-detail">Integrity-checked snapshot</div></div>` : ""}</div><section class="panel"><div class="panel-head"><div><h2>Account security</h2><p>Manage credentials and multifactor protection.</p></div><div class="filter-row"><button class="secondary" data-account="password">Change password</button><button class="primary" data-account="mfa">Enable MFA</button>${me.role === "admin" ? '<button class="secondary" data-account="backup">Create backup</button><button class="primary" data-account="user">Add user</button>' : ""}</div></div>${me.role === "admin" ? `<div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>MFA</th><th>Status</th></tr></thead><tbody>${users.map((x) => `<tr><td>${esc(x.display_name)}<span class="subtle">${esc(x.username)}</span></td><td>${esc(label(x.role))}</td><td>${x.mfa_enabled ? "Enabled" : "Not enabled"}</td><td>${x.disabled ? "Disabled" : "Active"}</td></tr>`).join("")}</tbody></table></div>` : ""}</section>${
+    me.role === "admin"
+      ? `<section class="panel"><div class="panel-head"><div><h2>Recent audit activity</h2><p>Append-only operational events.</p></div></div><div class="record-list">${audit
+          .slice(0, 20)
+          .map(
+            (x) =>
+              `<div class="record"><div><h4>${esc(label(x.action))} <span class="subtle">${esc(x.username || "System")}</span></h4><p>${esc(x.case_id || "")} ${esc(x.detail || "")} · ${new Date(x.occurred_at).toLocaleString()}</p></div></div>`,
+          )
+          .join("")}</div></section>`
+      : ""
+  }`;
+  document.querySelector("[data-account=password]").onclick = () =>
+    openModal({
+      title: "Change password",
+      body:
+        field("current_password", "Current password", "password", {
+          required: true,
+        }) +
+        field("new_password", "New password", "password", {
+          required: true,
+          placeholder: "At least 12 characters",
+        }),
+      submit: "Change password",
+      onSubmit: async (d) => {
+        await request("/api/change-password", {
+          method: "POST",
+          body: JSON.stringify(d),
+        });
+        location.href = "/login";
+      },
+    });
+  document.querySelector("[data-account=mfa]").onclick = async () => {
+    const setup = await request("/api/mfa/setup", {
+      method: "POST",
+      body: "{}",
+    });
+    openModal({
+      title: "Enable authenticator MFA",
+      body:
+        `<div class="field full"><label>Authenticator secret</label><input readonly value="${esc(setup.secret)}"><span class="subtle">Add this secret to an authenticator app, then enter its six-digit code.</span></div>` +
+        field("code", "Verification code", "text", { required: true }),
+      submit: "Enable MFA",
+      onSubmit: async (d) => {
+        await request("/api/mfa/enable", {
+          method: "POST",
+          body: JSON.stringify({ secret: setup.secret, code: d.code }),
+        });
+        toast("MFA enabled");
+      },
+    });
+  };
+  document
+    .querySelector("[data-account=backup]")
+    ?.addEventListener("click", async () => {
+      await request("/api/backups", { method: "POST", body: "{}" });
+      toast("Verified backup created");
+      await account();
+    });
+  document.querySelector("[data-account=user]")?.addEventListener("click", () =>
+    openModal({
+      title: "Add workbench user",
+      body:
+        field("username", "Username", "text", { required: true }) +
+        field("display_name", "Display name", "text", { required: true }) +
+        field("password", "Temporary password", "password", {
+          required: true,
+          placeholder: "At least 12 characters",
+        }) +
+        field("role", "Role", "select", {
+          options: ["investigator", "supervisor", "reviewer", "admin"],
+        }),
+      submit: "Create user",
+      onSubmit: async (d) => {
+        await request("/api/users", {
+          method: "POST",
+          body: JSON.stringify(d),
+        });
+        await account();
+      },
+    }),
+  );
+  if (me.role === "admin") {
+    document
+      .querySelector(".filter-row")
+      ?.insertAdjacentHTML(
+        "beforeend",
+        '<label class="secondary">Import case package<input id="casePackageImport" type="file" accept="application/json" hidden></label>',
+      );
+    document.querySelector("#casePackageImport").onchange = async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        const payload = JSON.parse(await file.text());
+        const data = await request("/api/cases/import", {
+          method: "POST",
+          body: JSON.stringify({ case: payload }),
+        });
+        toast(`Imported ${data.case_id}`);
+        location.hash = `#/case/${encodeURIComponent(data.case_id)}`;
+      } catch (err) {
+        toast(`Import failed: ${err.message}`);
+      }
+    };
+  }
+}
+async function refreshAlertCount() {
+  const notices = await request("/api/notifications");
+  state.notifications = notices;
+  const unread = notices.filter((notice) => !notice.read_at).length;
+  const count = document.querySelector("#alertCount");
+  count.hidden = unread === 0;
+  count.textContent = unread > 99 ? "99+" : String(unread);
+}
+
+async function alerts() {
+  setChrome("Alerts", "alerts");
+  const notices = state.notifications || (await request("/api/notifications"));
+  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Operational awareness</p><h1>Case alerts</h1><p>Review submissions, approvals, and correction requests stay visible here.</p></div></div><section class="panel"><div class="alert-list">${notices.map((notice) => `<article class="alert-item ${notice.read_at ? "read" : ""}"><div><p class="eyebrow">${esc(label(notice.kind))}</p><h3>${esc(notice.message)}</h3><span class="subtle">${new Date(notice.created_at).toLocaleString()}</span></div><div class="record-actions">${notice.case_id ? `<button class="quiet" data-open-case="${esc(notice.case_id)}">Open case</button>` : ""}${!notice.read_at ? `<button class="secondary" data-read-alert="${notice.id}">Mark read</button>` : ""}</div></article>`).join("") || '<div class="empty"><strong>No alerts</strong>Review workflow updates will appear here.</div>'}</div></section>`;
+  document.querySelectorAll("[data-read-alert]").forEach(
+    (button) =>
+      (button.onclick = async () => {
+        await request(`/api/notifications/${button.dataset.readAlert}`, {
+          method: "PATCH",
+          body: "{}",
+        });
+        await refreshAlertCount();
+        await alerts();
+      }),
+  );
+  document.querySelectorAll("[data-open-case]").forEach(
+    (button) =>
+      (button.onclick = () => {
+        location.hash = `#/case/${encodeURIComponent(button.dataset.openCase)}`;
+      }),
+  );
+}
+
+async function route() {
+  try {
+    await loadMeta();
+    await refreshAlertCount();
+    const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+    if (parts[0] === "case" && parts[1])
+      await caseView(decodeURIComponent(parts[1]));
+    else if (parts[0] === "guide") guide();
+    else if (parts[0] === "alerts") await alerts();
+    else if (parts[0] === "account") await account();
+    else await dashboard();
+  } catch (err) {
+    app.innerHTML = `<div class="empty"><strong>Unable to load the workbench</strong>${esc(err.message)}</div>`;
+  }
+}
+document.querySelector("#newCaseButton").onclick = addCase;
+document.querySelector("#menuButton").onclick = () =>
+  document.querySelector(".sidebar").classList.toggle("open");
+document.querySelector("#today").textContent = new Intl.DateTimeFormat(
+  undefined,
+  { weekday: "short", month: "short", day: "numeric" },
+).format(new Date());
+window.addEventListener("hashchange", route);
+route();

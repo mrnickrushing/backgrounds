@@ -63,10 +63,11 @@ Remote deployments must set `WORKBENCH_USERNAME`, `WORKBENCH_PASSWORD`, and a ra
 - DOCX, PDF, and JSON case exports.
 - Append-only application audit events, daily integrity-checked snapshots, manual verified backups, database readiness checks, deployed-version reporting, request IDs, and privacy-safe structured logs.
 - An Account screen for users, roles, password changes, MFA enrollment, backups, system health, and recent audit activity.
+- Guided case readiness, review alerts, and a non-destructive administrator-only JSON case-package import for fictional training or controlled recovery.
 
 See the [operations and recovery runbook](docs/OPERATIONS_RUNBOOK.md), [security policy](SECURITY.md), and [delivery plan](docs/DELIVERY_PLAN.md). Agency identity, eSOPH, records, email, off-volume backup, and retention-destruction integrations remain disabled until the responsible system owner supplies written authorization and supported interfaces.
 
-See the [desk guide](docs/INVESTIGATOR_DESK_GUIDE.md), [interview outlines](docs/INTERVIEW_QUESTION_OUTLINES.md), [writing guide](docs/REPORT_WRITING_GUIDE.md), and [product requirements](docs/PRODUCT_REQUIREMENTS.md).
+See the [desk guide](docs/INVESTIGATOR_DESK_GUIDE.md), [training walkthrough](docs/TRAINING_WALKTHROUGH.md), [interview outlines](docs/INTERVIEW_QUESTION_OUTLINES.md), [writing guide](docs/REPORT_WRITING_GUIDE.md), and [product requirements](docs/PRODUCT_REQUIREMENTS.md).
 
 ### Evidence tools
 
@@ -136,7 +137,6 @@ These are documentation aids, not evidentiary authority and not automation:
 Ideas for next tools, not yet built:
 
 - Approved template export after the current CDCR template is available.
-- PDF export of reports for direct inclusion in a case file.
 - archive.today submission alongside the Wayback Machine.
 
 ## License

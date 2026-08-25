@@ -28,6 +28,7 @@ from .core import (
     next_id,
     render_report,
     utc_now,
+    validate_case_package,
 )
 from .security import new_totp_secret, verify_totp
 from .store import WorkbenchStore
@@ -218,6 +219,20 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 target = self.store.backup()
                 self.store.audit(self.current_user(), "backup_created", detail=target.name, ip=self.client_address[0])
                 return self.send_json({"status": "ok", "file": target.name}, HTTPStatus.CREATED)
+            if path == "/api/cases/import":
+                if not self.require_role("admin"):
+                    return
+                data = validate_case_package(body.get("case"))
+                try:
+                    self.store.load_case(data["case_id"])
+                except WorkbenchError:
+                    pass
+                else:
+                    raise WorkbenchError("a case with that identifier already exists; imports never overwrite cases")
+                append_activity(data, "case_imported", "Imported from a validated JSON case package")
+                self.store.save_case(data, self.current_user(), "case_imported")
+                self.store.audit(self.current_user(), "case_package_imported", data["case_id"], ip=self.client_address[0])
+                return self.send_json({**data, "audit": audit_case(data)}, HTTPStatus.CREATED)
             if not self.require_role("admin", "supervisor", "investigator"):
                 return
             if path == "/api/cases":
@@ -294,6 +309,12 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         try:
             if not self.require_auth(urlparse(self.path).path):
                 return
+            if urlparse(self.path).path.startswith("/api/notifications/"):
+                notification_id = self.api_parts(urlparse(self.path).path)
+                if len(notification_id) != 2 or notification_id[0] != "notifications":
+                    return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
+                self.store.mark_notification_read(notification_id[1], self.current_user()["id"])
+                return self.send_json({"status": "read"})
             if not self.require_role("admin", "supervisor", "investigator"):
                 return
             parts = self.api_parts(urlparse(self.path).path)
@@ -321,11 +342,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     if action == "submit":
                         review["status"] = "pending"
                         review["submitted_at"] = utc_now()
+                        self.store.add_notification(None, data["case_id"], "review_submitted", f"{data['case_id']} was submitted for supervisory review")
                     elif action in {"approve", "return"}:
                         if user.get("role") not in {"admin", "supervisor"}:
                             return self.send_json({"error": "supervisor role required"}, HTTPStatus.FORBIDDEN)
                         review["status"] = "approved" if action == "approve" else "corrections_requested"
                         review["decided_at"] = utc_now()
+                        self.store.add_notification(None, data["case_id"], "review_approved" if action == "approve" else "corrections_requested", f"{data['case_id']} was {'approved' if action == 'approve' else 'returned for correction'}")
                     else:
                         raise WorkbenchError("invalid review action")
                     if body.get("review_comment"):
