@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,6 +15,14 @@ from .security import hash_password, new_token, token_digest, verify_password
 
 
 SCHEMA_VERSION = 1
+
+
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
 
 
 class WorkbenchStore:
@@ -24,7 +34,7 @@ class WorkbenchStore:
         self.initialize()
 
     def connect(self):
-        connection = sqlite3.connect(self.path, timeout=20)
+        connection = sqlite3.connect(self.path, timeout=20, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
@@ -60,6 +70,11 @@ class WorkbenchStore:
                 CREATE TABLE IF NOT EXISTS notifications (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER REFERENCES users(id), case_id TEXT,
                     kind TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS attachments (
+                    id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES cases(case_id), filename TEXT NOT NULL,
+                    media_type TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, storage_name TEXT NOT NULL,
+                    uploaded_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS login_attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, username TEXT NOT NULL,
@@ -201,6 +216,53 @@ class WorkbenchStore:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM notifications WHERE user_id IS NULL OR user_id=? ORDER BY id DESC LIMIT ?", (user_id, min(limit, 200)))]
 
+    def save_attachment(self, case_id, filename, media_type, content, actor):
+        validate_case_id(case_id)
+        allowed = {"application/pdf": b"%PDF", "image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff", "text/plain": None}
+        if media_type not in allowed:
+            raise WorkbenchError("attachment type is not allowed")
+        if not content or len(content) > 10 * 1024 * 1024:
+            raise WorkbenchError("attachment must be between 1 byte and 10 MB")
+        magic = allowed[media_type]
+        if magic and not content.startswith(magic):
+            raise WorkbenchError("attachment contents do not match its declared type")
+        if media_type == "text/plain":
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise WorkbenchError("text attachments must be UTF-8") from exc
+        safe_name = Path(filename).name.replace("\x00", "")[:180]
+        if not safe_name:
+            raise WorkbenchError("attachment filename is required")
+        attachment_id = f"ATT-{uuid.uuid4().hex[:12].upper()}"
+        storage_name = uuid.uuid4().hex
+        directory = self.root / "attachments" / case_id
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = directory / storage_name
+        target.write_bytes(content)
+        os.chmod(target, 0o600)
+        digest = hashlib.sha256(content).hexdigest()
+        with self.connect() as db:
+            db.execute("INSERT INTO attachments(id,case_id,filename,media_type,size,sha256,storage_name,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (attachment_id, case_id, safe_name, media_type, len(content), digest, storage_name, actor.get("id") if actor else None, utc_now()))
+        self.audit(actor, "attachment_uploaded", case_id, f"{attachment_id}:{safe_name}")
+        return self.attachment(attachment_id)[0]
+
+    def attachments(self, case_id):
+        with self.connect() as db:
+            return [dict(row) for row in db.execute("SELECT id,case_id,filename,media_type,size,sha256,created_at FROM attachments WHERE case_id=? ORDER BY created_at DESC", (case_id,))]
+
+    def attachment(self, attachment_id):
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM attachments WHERE id=?", (attachment_id,)).fetchone()
+        if not row:
+            raise WorkbenchError("attachment not found")
+        item = dict(row)
+        path = self.root / "attachments" / item["case_id"] / item["storage_name"]
+        content = path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != item["sha256"]:
+            raise WorkbenchError("attachment integrity check failed")
+        return item, content
+
     def save_case(self, data, actor=None, action="case_updated", expected_version=None, detail=""):
         case_id = validate_case_id(data["case_id"])
         now = utc_now()
@@ -237,7 +299,7 @@ class WorkbenchStore:
         backup_dir = self.root / "backups"
         backup_dir.mkdir(mode=0o700, exist_ok=True)
         target = Path(destination) if destination else backup_dir / f"workbench-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
-        with self.connect() as source, sqlite3.connect(target) as output:
+        with self.connect() as source, sqlite3.connect(target, factory=ClosingConnection) as output:
             source.backup(output)
             result = output.execute("PRAGMA integrity_check").fetchone()[0]
             if result != "ok":

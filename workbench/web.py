@@ -29,6 +29,7 @@ from .core import (
 )
 from .security import verify_totp
 from .store import WorkbenchStore
+from .exports import docx_export, json_export, pdf_export
 
 STATIC_ROOT = Path(__file__).with_name("static")
 
@@ -137,6 +138,22 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     return self.send_json({**data, "audit": audit_case(data)})
                 if len(parts) == 3 and parts[2] == "report":
                     return self.send_text(render_report(data), "text/markdown; charset=utf-8")
+                if len(parts) == 3 and parts[2] == "attachments":
+                    return self.send_json(self.store.attachments(data["case_id"]))
+                if len(parts) == 4 and parts[2] == "attachments":
+                    item, content = self.store.attachment(parts[3])
+                    if item["case_id"] != data["case_id"]:
+                        raise WorkbenchError("attachment not found")
+                    self.store.audit(self.current_user(), "attachment_downloaded", data["case_id"], item["id"], self.client_address[0])
+                    return self.send_bytes(content, item["media_type"], item["filename"], attachment=True)
+                if len(parts) == 3 and parts[2] == "export":
+                    export_format = parse_qs(urlparse(self.path).query).get("format", ["pdf"])[0]
+                    exporters = {"pdf": (pdf_export, "application/pdf"), "docx": (docx_export, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "json": (json_export, "application/json")}
+                    if export_format not in exporters:
+                        raise WorkbenchError("unsupported export format")
+                    exporter, media_type = exporters[export_format]
+                    self.store.audit(self.current_user(), "case_exported", data["case_id"], export_format, self.client_address[0])
+                    return self.send_bytes(exporter(data), media_type, f"{data['case_id']}.{export_format}", attachment=True)
             return self.send_static(path)
         except WorkbenchError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
@@ -181,6 +198,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
             data = self.store.load_case(parts[1])
             resource = parts[2]
+            if resource == "attachments":
+                try:
+                    content = base64.b64decode(body.get("content_base64", ""), validate=True)
+                except ValueError as exc:
+                    raise WorkbenchError("attachment content is not valid base64") from exc
+                item = self.store.save_attachment(data["case_id"], body.get("filename", ""), body.get("media_type", ""), content, self.current_user())
+                return self.send_json(item, HTTPStatus.CREATED)
             if resource == "inquiries":
                 if body.get("area") not in AREAS:
                     raise WorkbenchError("invalid investigation area")
@@ -428,6 +452,19 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def send_bytes(self, payload, content_type, filename="download", attachment=False, status=HTTPStatus.OK):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        if attachment:
+            safe = quote(filename.replace('"', ""))
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{safe}")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
