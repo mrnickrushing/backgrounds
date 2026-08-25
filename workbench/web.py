@@ -31,7 +31,7 @@ from .core import (
 )
 from .security import new_totp_secret, verify_totp
 from .store import WorkbenchStore
-from .exports import docx_export, json_export, pdf_export
+from .exports import docx_export, html_report, json_export, pdf_export
 
 STATIC_ROOT = Path(__file__).with_name("static")
 
@@ -152,7 +152,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 if len(parts) == 2:
                     return self.send_json({**data, "audit": audit_case(data)})
                 if len(parts) == 3 and parts[2] == "report":
-                    return self.send_text(render_report(data), "text/markdown; charset=utf-8")
+                    report_format = parse_qs(urlparse(self.path).query).get("format", ["html"])[0]
+                    self.store.audit(self.current_user(), "report_previewed", data["case_id"], report_format, self.client_address[0])
+                    if report_format == "markdown":
+                        return self.send_text(render_report(data), "text/markdown; charset=utf-8")
+                    if report_format == "html":
+                        return self.send_text(html_report(data), "text/html; charset=utf-8")
+                    raise WorkbenchError("unsupported report format")
                 if len(parts) == 3 and parts[2] == "attachments":
                     return self.send_json(self.store.attachments(data["case_id"]))
                 if len(parts) == 4 and parts[2] == "attachments":

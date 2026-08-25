@@ -6,7 +6,7 @@ from workbench.core import AREAS, DIMENSIONS, audit_case, load_case, new_case, r
 from workbench.security import hash_password, totp_code, verify_password, verify_totp
 from workbench.store import WorkbenchStore
 from workbench.web import case_summary, create_session, valid_session
-from workbench.exports import docx_export, json_export, pdf_export
+from workbench.exports import docx_export, html_report, json_export, pdf_export
 
 
 class WorkbenchTests(unittest.TestCase):
@@ -44,6 +44,9 @@ class WorkbenchTests(unittest.TestCase):
         self.assertTrue(pdf_export(data).startswith(b"%PDF-1.4"))
         self.assertTrue(docx_export(data).startswith(b"PK"))
         self.assertIn(b'"case_id": "EXPORT-1"', json_export(data))
+        rendered = html_report(data)
+        self.assertIn("Background Investigation Report", rendered)
+        self.assertIn("Case EXPORT-1", rendered)
 
     def test_attachment_allowlist_hash_and_path_safety(self):
         with tempfile.TemporaryDirectory() as directory:
