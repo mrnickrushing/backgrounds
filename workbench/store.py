@@ -221,6 +221,12 @@ class WorkbenchStore:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM notifications WHERE user_id IS NULL OR user_id=? ORDER BY id DESC LIMIT ?", (user_id, min(limit, 200)))]
 
+    def mark_notification_read(self, notification_id, user_id):
+        with self.connect() as db:
+            cursor = db.execute("UPDATE notifications SET read_at=? WHERE id=? AND (user_id IS NULL OR user_id=?) AND read_at IS NULL", (utc_now(), int(notification_id), user_id))
+        if not cursor.rowcount:
+            raise WorkbenchError("notification not found")
+
     def save_attachment(self, case_id, filename, media_type, content, actor):
         validate_case_id(case_id)
         allowed = {"application/pdf": b"%PDF", "image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff", "text/plain": None}

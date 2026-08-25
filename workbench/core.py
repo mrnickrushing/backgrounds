@@ -163,6 +163,34 @@ def next_id(items: list[dict[str, Any]], prefix: str) -> str:
     return f"{prefix}-{number:04d}"
 
 
+def validate_case_package(value: Any) -> dict[str, Any]:
+    """Accept only a complete Investigator Workbench case package, never a database snapshot."""
+    if not isinstance(value, dict):
+        raise WorkbenchError("case package must be a JSON object")
+    data = json.loads(json.dumps(value))
+    case_id = validate_case_id(str(data.get("case_id", "")))
+    required = {"areas", "dimensions", "bias_relevant_findings", "inquiries", "discrepancies", "interviews", "sources", "review"}
+    if not required.issubset(data):
+        raise WorkbenchError("case package is missing required workbench sections")
+    if set(data["areas"]) != set(AREAS) or set(data["dimensions"]) != set(DIMENSIONS):
+        raise WorkbenchError("case package does not match the current investigation structure")
+    for area in data["areas"].values():
+        if not isinstance(area, dict) or area.get("status") not in {"not_started", "in_progress", "complete", "not_applicable"} or not isinstance(area.get("narrative"), str) or not isinstance(area.get("source_ids"), list):
+            raise WorkbenchError("case package contains an invalid investigation area")
+    for dimension in data["dimensions"].values():
+        if not isinstance(dimension, dict) or not isinstance(dimension.get("narrative"), str) or not isinstance(dimension.get("source_ids"), list):
+            raise WorkbenchError("case package contains an invalid POST dimension")
+    if not isinstance(data["bias_relevant_findings"], dict) or not isinstance(data["bias_relevant_findings"].get("narrative"), str) or not isinstance(data["bias_relevant_findings"].get("source_ids"), list):
+        raise WorkbenchError("case package contains invalid bias findings")
+    if any(not isinstance(data[name], list) or any(not isinstance(item, dict) for item in data[name]) for name in ("inquiries", "discrepancies", "interviews", "sources")):
+        raise WorkbenchError("case package contains invalid records")
+    if data.get("status") not in CASE_STATUSES:
+        raise WorkbenchError("case package contains an invalid case status")
+    data["case_id"] = case_id
+    data.pop("record_meta", None)
+    return data
+
+
 def due_state(value: str) -> str:
     if not value:
         return "none"
@@ -212,19 +240,30 @@ def audit_case(data: dict[str, Any]) -> dict[str, Any]:
         if not any(item["kind"] == "pre_investigatory" for item in data["interviews"]):
             errors.append("no Pre-Investigatory Interview is documented")
 
+    complete_areas = sum(1 for key in AREAS if data["areas"][key]["status"] in {"complete", "not_applicable"})
+    written_dimensions = sum(1 for key in DIMENSIONS if data["dimensions"][key]["narrative"].strip())
+    checklist = [
+        {"key": "case_opened", "label": "Confirm assignment and target date", "complete": bool(data.get("investigator") and data.get("target_date"))},
+        {"key": "pre_interview", "label": "Document the Pre-Investigatory Interview", "complete": any(item["kind"] == "pre_investigatory" for item in data["interviews"])},
+        {"key": "sources", "label": "Register approved-system source locators", "complete": bool(data["sources"])},
+        {"key": "coverage", "label": "Complete the twelve required investigation areas", "complete": complete_areas == len(AREAS), "detail": f"{complete_areas} of {len(AREAS)} complete"},
+        {"key": "narrative", "label": "Write POST dimensions and bias-relevant findings", "complete": written_dimensions == len(DIMENSIONS) and bool(data["bias_relevant_findings"]["narrative"].strip()), "detail": f"{written_dimensions} of {len(DIMENSIONS)} dimensions drafted"},
+        {"key": "resolve", "label": "Resolve inquiries and discrepancies", "complete": not open_inquiries and not open_discrepancies, "detail": f"{len(open_inquiries)} inquiries · {len(open_discrepancies)} discrepancies open"},
+    ]
     return {
         "case_id": data["case_id"],
         "ready": not errors,
         "errors": errors,
         "warnings": warnings,
         "metrics": {
-            "areas_complete": sum(1 for key in AREAS if data["areas"][key]["status"] in {"complete", "not_applicable"}),
+            "areas_complete": complete_areas,
             "areas_total": len(AREAS),
             "open_inquiries": len(open_inquiries),
             "open_discrepancies": len(open_discrepancies),
             "interviews": len(data["interviews"]),
             "sources": len(data["sources"]),
         },
+        "checklist": checklist,
     }
 
 

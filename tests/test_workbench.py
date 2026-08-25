@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from workbench.core import AREAS, DIMENSIONS, audit_case, load_case, new_case, render_report, save_case
+from workbench.core import AREAS, DIMENSIONS, WorkbenchError, audit_case, load_case, new_case, render_report, save_case, validate_case_package
 from workbench.security import hash_password, totp_code, verify_password, verify_totp
 from workbench.store import WorkbenchStore
 from workbench.web import case_summary, create_session, valid_session
@@ -38,6 +38,23 @@ class WorkbenchTests(unittest.TestCase):
             self.assertTrue(backup.is_file())
             store.revoke_session(token)
             self.assertIsNone(store.session_user(token))
+
+    def test_case_package_validation_and_notifications(self):
+        data = new_case("PACKAGE-1", "Investigator", "2026-12-01")
+        package = validate_case_package(data)
+        self.assertEqual(package["case_id"], "PACKAGE-1")
+        package["areas"].pop(next(iter(package["areas"])))
+        with self.assertRaises(WorkbenchError):
+            validate_case_package(package)
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkbenchStore(directory)
+            store.ensure_bootstrap_user("admin", "a sufficiently long password")
+            user = store.authenticate("admin", "a sufficiently long password")
+            store.add_notification(user["id"], "PACKAGE-1", "review_submitted", "Case submitted")
+            notice = store.notifications(user["id"])[0]
+            self.assertIsNone(notice["read_at"])
+            store.mark_notification_read(notice["id"], user["id"])
+            self.assertIsNotNone(store.notifications(user["id"])[0]["read_at"])
 
     def test_exports_have_valid_container_signatures(self):
         data = new_case("EXPORT-1")
@@ -78,6 +95,7 @@ class WorkbenchTests(unittest.TestCase):
         self.assertFalse(result["ready"])
         self.assertTrue(any("areas incomplete" in item for item in result["errors"]))
         self.assertTrue(any("Pre-Investigatory" in item for item in result["errors"]))
+        self.assertTrue(any(item["key"] == "coverage" for item in result["checklist"]))
 
     def test_report_preserves_mandated_area_order(self):
         report = render_report(new_case("CASE-3"))
