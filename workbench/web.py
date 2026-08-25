@@ -8,6 +8,8 @@ import json
 import mimetypes
 import os
 import time
+import threading
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -86,13 +88,22 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         if getattr(self.server, "quiet", False):  # type: ignore[attr-defined]
             return
-        super().log_message(format, *args)
+        entry = {"at": utc_now(), "request_id": self.request_id(), "ip": self.client_address[0], "method": self.command, "path": urlparse(self.path).path, "message": format % args}
+        print(json.dumps(entry, separators=(",", ":")))
+
+    def request_id(self):
+        if not hasattr(self, "_request_id"):
+            self._request_id = self.headers.get("X-Request-ID", "")[:80] or uuid.uuid4().hex
+        return self._request_id
 
     def do_GET(self):
         try:
             path = urlparse(self.path).path
             if path == "/healthz":
-                return self.send_json({"status": "ok"})
+                return self.send_json({"status": "ok", "version": getattr(self.server, "version", "dev")})
+            if path == "/readyz":
+                health = self.store.health()
+                return self.send_json({"status": "ready" if health["database"] == "ok" else "degraded", "database": health["database"], "version": getattr(self.server, "version", "dev")}, HTTPStatus.OK if health["database"] == "ok" else HTTPStatus.SERVICE_UNAVAILABLE)
             if path == "/login":
                 if self.is_authenticated():
                     return self.redirect("/")
@@ -114,6 +125,10 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 return self.send_json(self.store.audit_events(limit=200))
             if path == "/api/notifications":
                 return self.send_json(self.store.notifications(self.current_user()["id"]))
+            if path == "/api/system":
+                if not self.require_role("admin"):
+                    return
+                return self.send_json({**self.store.health(), "version": getattr(self.server, "version", "dev")})
             if path == "/api/templates":
                 return self.send_json({"inquiries": ["Initial records request", "First follow-up", "Final nonresponse follow-up"], "interviews": ["Pre-Investigatory Interview", "Employment verification", "Reference interview", "Discrepancy clarification"]})
             if path == "/api/meta":
@@ -441,6 +456,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.security_headers()
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -452,6 +468,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.security_headers()
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -462,6 +479,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.security_headers()
         if attachment:
             safe = quote(filename.replace('"', ""))
             self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{safe}")
@@ -485,9 +503,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.security_headers()
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def security_headers(self):
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("X-Request-ID", self.request_id())
 
 
 def serve(host="127.0.0.1", port=8765, data_root=None, quiet=False):
@@ -498,11 +523,16 @@ def serve(host="127.0.0.1", port=8765, data_root=None, quiet=False):
     server.auth_username = os.environ.get("WORKBENCH_USERNAME", "")
     server.auth_password = os.environ.get("WORKBENCH_PASSWORD", "")
     server.session_secret = os.environ.get("WORKBENCH_SESSION_SECRET", "")
+    server.version = os.environ.get("RAILWAY_GIT_COMMIT_SHA", os.environ.get("WORKBENCH_VERSION", "dev"))[:12]
     if bool(server.auth_username) != bool(server.auth_password):
         raise RuntimeError("WORKBENCH_USERNAME and WORKBENCH_PASSWORD must both be set")
     if server.auth_username and len(server.session_secret) < 32:
         raise RuntimeError("WORKBENCH_SESSION_SECRET must be at least 32 characters when authentication is enabled")
     server.store.ensure_bootstrap_user(server.auth_username, server.auth_password, os.environ.get("WORKBENCH_TOTP_SECRET", ""))
+    backup_stop = threading.Event()
+    backup_interval = max(300, int(os.environ.get("WORKBENCH_BACKUP_INTERVAL_SECONDS", "86400")))
+    backup_thread = threading.Thread(target=server.store.backup_worker, args=(backup_stop, backup_interval), daemon=True, name="workbench-backup")
+    backup_thread.start()
     print(f"Investigator Workbench: http://{host}:{server.server_port}")
     print(f"Case data: {server.store.root}")
     try:
@@ -510,6 +540,7 @@ def serve(host="127.0.0.1", port=8765, data_root=None, quiet=False):
     except KeyboardInterrupt:
         pass
     finally:
+        backup_stop.set()
         server.server_close()
 
 

@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: PYTHONWARNINGS=error::ResourceWarning python -m unittest discover -v
+      - run: python -m py_compile workbench/*.py
+      - run: node --check workbench/static/app.js
+      - run: git diff --check
+      - run: docker build -t backgrounds-workbench:test .
