@@ -139,6 +139,10 @@ class WorkbenchStore:
             db.execute("UPDATE users SET password_hash=?,updated_at=? WHERE id=?", (hash_password(new_password), utc_now(), user_id))
             db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=?", (utc_now(), user_id))
 
+    def enable_totp(self, user_id, secret):
+        with self.connect() as db:
+            db.execute("UPDATE users SET totp_secret=?,updated_at=? WHERE id=?", (secret, utc_now(), user_id))
+
     def authenticate(self, username: str, password: str):
         with self.connect() as db:
             row = db.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE AND disabled=0", (username,)).fetchone()

@@ -32,6 +32,10 @@ def new_token(size: int = 32) -> str:
     return secrets.token_urlsafe(size)
 
 
+def new_totp_secret() -> str:
+    return base64.b32encode(os.urandom(20)).decode().rstrip("=")
+
+
 def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 

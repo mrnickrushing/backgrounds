@@ -29,7 +29,7 @@ from .core import (
     render_report,
     utc_now,
 )
-from .security import verify_totp
+from .security import new_totp_secret, verify_totp
 from .store import WorkbenchStore
 from .exports import docx_export, json_export, pdf_export
 
@@ -196,6 +196,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 self.store.change_password(user["id"], body.get("current_password", ""), body.get("new_password", ""))
                 self.store.audit(user, "password_changed", ip=self.client_address[0])
                 return self.send_json({"status": "password changed; sign in again"})
+            if path == "/api/mfa/setup":
+                return self.send_json({"secret": new_totp_secret(), "account": self.current_user().get("username", "")})
+            if path == "/api/mfa/enable":
+                secret = body.get("secret", "")
+                if len(secret) < 16 or not verify_totp(secret, body.get("code", "")):
+                    raise WorkbenchError("authenticator code is invalid")
+                user = self.current_user()
+                self.store.enable_totp(user["id"], secret)
+                self.store.audit(user, "mfa_enabled", ip=self.client_address[0])
+                return self.send_json({"status": "MFA enabled"})
             if path == "/api/backups":
                 if not self.require_role("admin"):
                     return
