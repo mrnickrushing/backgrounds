@@ -1,8 +1,6 @@
-# Backgrounds
+# Backgrounds Investigator Workbench
 
-Small, dependency-free tools for documenting social media / OSINT findings
-during background investigations — built for use alongside, not instead of,
-your agency's approved procedures and platforms.
+A local-first workbench and focused evidence tools for background investigations—built for use alongside, not instead of, agency-approved procedures, eSOPH, and records platforms.
 
 They exist to solve one recurring problem: a social media account that
 *looks* like it belongs to a candidate is only useful in an investigative
@@ -14,6 +12,7 @@ up.
 
 | Tool | Purpose |
 |---|---|
+| [`workbench`](workbench) | Tracks the twelve required investigation areas, inquiries and follow-ups, discrepancies, interviews, sources, POST-dimension narratives, report assembly, and closing QC. |
 | [`tools/evidence_logger`](tools/evidence_logger) | Tamper-evident, hash-chained log of findings (URLs, screenshots, notes). Detects after-the-fact edits and can archive a URL to the Wayback Machine. |
 | [`tools/identity_correlation`](tools/identity_correlation) | Worksheet that records known candidate identifiers next to what was observed on a given account, and scores the overlap so the reasoning is written down the same way every time. |
 | [`tools/image_forensics`](tools/image_forensics) | EXIF metadata extraction and perceptual-hash comparison, to check a photo's capture details and catch a reused/stolen profile photo across accounts. |
@@ -24,6 +23,38 @@ install. `image_forensics` additionally requires Pillow (`pip install -r
 tools/image_forensics/requirements.txt`).
 
 ## Quick start
+
+### Investigator workbench
+
+Use a non-PII case identifier. Everything written under `cases/` remains ignored by Git.
+
+```bash
+python3 -m workbench init 2026-0142 --investigator "J. Doe" --target-date 2026-11-30
+python3 -m workbench add-inquiry 2026-0142 \
+  --area employment_history --source-type employer \
+  --source-label "Employer 01" --method approved-email \
+  --follow-up-due 2026-09-01 --release-required --release-attached
+python3 -m workbench add-discrepancy 2026-0142 \
+  --title "Employment date mismatch" --area employment_history \
+  --candidate-statement "Candidate-provided account" \
+  --contrary-information "Source-provided account" --source-ids SRC-0001 \
+  --dimensions integrity conscientiousness
+python3 -m workbench audit 2026-0142
+python3 -m workbench report 2026-0142 --output cases/2026-0142/narrative-draft.md
+python3 -m workbench dashboard
+```
+
+Launch the local browser workbench:
+
+```bash
+python3 -m workbench serve
+```
+
+Then open `http://127.0.0.1:8765`. The server binds only to the local machine by default. Use `--cases-dir` to point it at an approved encrypted location.
+
+See the [desk guide](docs/INVESTIGATOR_DESK_GUIDE.md), [interview outlines](docs/INTERVIEW_QUESTION_OUTLINES.md), [writing guide](docs/REPORT_WRITING_GUIDE.md), and [product requirements](docs/PRODUCT_REQUIREMENTS.md).
+
+### Evidence tools
 
 ```bash
 # Log a finding
@@ -90,6 +121,7 @@ These are documentation aids, not evidentiary authority and not automation:
 
 Ideas for next tools, not yet built:
 
+- Approved template export after the current CDCR template is available.
 - PDF export of reports for direct inclusion in a case file.
 - archive.today submission alongside the Wayback Machine.
 
