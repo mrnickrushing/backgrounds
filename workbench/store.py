@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -306,3 +307,26 @@ class WorkbenchStore:
                 raise WorkbenchError(f"backup integrity check failed: {result}")
         os.chmod(target, 0o600)
         return target
+
+    def prune_backups(self, keep=14):
+        backups = sorted((self.root / "backups").glob("workbench-*.db"), reverse=True)
+        for stale in backups[keep:]:
+            stale.unlink()
+
+    def health(self):
+        with self.connect() as db:
+            integrity = db.execute("PRAGMA quick_check").fetchone()[0]
+            users = db.execute("SELECT COUNT(*) FROM users WHERE disabled=0").fetchone()[0]
+            cases = db.execute("SELECT COUNT(*) FROM cases WHERE archived_at IS NULL").fetchone()[0]
+        backup_dir = self.root / "backups"
+        latest = max(backup_dir.glob("workbench-*.db"), key=lambda path: path.stat().st_mtime, default=None) if backup_dir.exists() else None
+        return {"database": integrity, "active_users": users, "active_cases": cases, "latest_backup": latest.name if latest else None}
+
+    def backup_worker(self, stop_event, interval_seconds=86_400):
+        while not stop_event.wait(interval_seconds):
+            try:
+                self.backup()
+                self.prune_backups()
+                self.audit(None, "scheduled_backup_completed")
+            except Exception as exc:
+                self.audit(None, "scheduled_backup_failed", detail=type(exc).__name__)
