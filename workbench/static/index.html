@@ -24,7 +24,7 @@
       <header class="topbar">
         <button class="mobile-menu" id="menuButton" aria-label="Toggle navigation">☰</button>
         <div class="crumb" id="crumb">Caseload</div>
-        <div class="top-actions"><span class="today" id="today"></span><button class="primary" id="newCaseButton">New case</button></div>
+        <div class="top-actions"><span class="today" id="today"></span><form method="post" action="/logout"><button class="secondary" type="submit">Sign out</button></form><button class="primary" id="newCaseButton">New case</button></div>
       </header>
       <div id="app" class="content" aria-live="polite"></div>
     </main>

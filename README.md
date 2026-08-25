@@ -52,6 +52,8 @@ python3 -m workbench serve
 
 Then open `http://127.0.0.1:8765`. The server binds only to the local machine by default. Use `--cases-dir` to point it at an approved encrypted location.
 
+Remote deployments must set `WORKBENCH_USERNAME`, `WORKBENCH_PASSWORD`, and a random `WORKBENCH_SESSION_SECRET` of at least 32 characters. The login page issues a secure, HTTP-only session cookie that expires after 12 hours. Railway deployments should mount persistent storage at `/data`; `/healthz` exposes only service health and no case information.
+
 See the [desk guide](docs/INVESTIGATOR_DESK_GUIDE.md), [interview outlines](docs/INTERVIEW_QUESTION_OUTLINES.md), [writing guide](docs/REPORT_WRITING_GUIDE.md), and [product requirements](docs/PRODUCT_REQUIREMENTS.md).
 
 ### Evidence tools
