@@ -57,6 +57,10 @@ class WorkbenchStore:
                     action TEXT NOT NULL, case_id TEXT, detail TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY(actor_user_id) REFERENCES users(id)
                 );
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER REFERENCES users(id), case_id TEXT,
+                    kind TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT
+                );
                 CREATE TABLE IF NOT EXISTS login_attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, username TEXT NOT NULL,
                     ip TEXT NOT NULL, successful INTEGER NOT NULL
@@ -172,6 +176,30 @@ class WorkbenchStore:
         data = json.loads(row["payload"])
         data["record_meta"] = {key: row[key] for key in ("version", "assigned_user_id", "supervisor_user_id", "archived_at", "retention_date")}
         return data
+
+    def update_case_meta(self, case_id, assigned_user_id=None, supervisor_user_id=None, retention_date=None, archived=None):
+        validate_case_id(case_id)
+        fields, values = [], []
+        for field, value in (("assigned_user_id", assigned_user_id), ("supervisor_user_id", supervisor_user_id), ("retention_date", retention_date)):
+            if value is not None:
+                fields.append(f"{field}=?")
+                values.append(value or None)
+        if archived is not None:
+            fields.append("archived_at=?")
+            values.append(utc_now() if archived else None)
+        if not fields:
+            return
+        values.append(case_id)
+        with self.connect() as db:
+            db.execute(f"UPDATE cases SET {','.join(fields)},updated_at=? WHERE case_id=?", (*values[:-1], utc_now(), values[-1]))
+
+    def add_notification(self, user_id, case_id, kind, message):
+        with self.connect() as db:
+            db.execute("INSERT INTO notifications(user_id,case_id,kind,message,created_at) VALUES(?,?,?,?,?)", (user_id, case_id, kind, message, utc_now()))
+
+    def notifications(self, user_id, limit=100):
+        with self.connect() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM notifications WHERE user_id IS NULL OR user_id=? ORDER BY id DESC LIMIT ?", (user_id, min(limit, 200)))]
 
     def save_case(self, data, actor=None, action="case_updated", expected_version=None, detail=""):
         case_id = validate_case_id(data["case_id"])

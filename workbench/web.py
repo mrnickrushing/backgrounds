@@ -54,12 +54,19 @@ def valid_session(token, secret, now=None, max_age=43_200):
 
 def case_summary(data):
     audit = audit_case(data)
+    overdue = sum(1 for item in data["inquiries"] if item.get("follow_up_due") and item["status"] not in {"received", "declined", "not_applicable"} and item["follow_up_due"] < __import__("datetime").date.today().isoformat())
     return {
         "case_id": data["case_id"],
         "investigator": data["investigator"],
         "status": data["status"],
         "target_date": data["target_date"],
         "updated_at": data["updated_at"],
+        "priority": data.get("priority", "normal"),
+        "tags": data.get("tags", []),
+        "review_status": data.get("review", {}).get("status", "not_submitted"),
+        "overdue_follow_ups": overdue,
+        "assigned_user_id": data.get("record_meta", {}).get("assigned_user_id"),
+        "supervisor_user_id": data.get("record_meta", {}).get("supervisor_user_id"),
         **audit["metrics"],
     }
 
@@ -104,10 +111,24 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 if not self.require_role("admin", "supervisor"):
                     return
                 return self.send_json(self.store.audit_events(limit=200))
+            if path == "/api/notifications":
+                return self.send_json(self.store.notifications(self.current_user()["id"]))
+            if path == "/api/templates":
+                return self.send_json({"inquiries": ["Initial records request", "First follow-up", "Final nonresponse follow-up"], "interviews": ["Pre-Investigatory Interview", "Employment verification", "Reference interview", "Discrepancy clarification"]})
             if path == "/api/meta":
                 return self.send_json({"areas": AREA_LABELS, "dimensions": DIMENSION_LABELS, "case_statuses": CASE_STATUSES})
             if path == "/api/cases":
-                cases = [case_summary(item) for item in self.store.list_cases()]
+                query = parse_qs(urlparse(self.path).query)
+                cases = [case_summary(item) for item in self.store.list_cases(query.get("archived", [""])[0] == "1")]
+                search = query.get("q", [""])[0].strip().lower()
+                status_filter = query.get("status", [""])[0]
+                due_filter = query.get("due", [""])[0]
+                if search:
+                    cases = [item for item in cases if search in " ".join((item["case_id"], item["investigator"], " ".join(item["tags"]))).lower()]
+                if status_filter:
+                    cases = [item for item in cases if item["status"] == status_filter]
+                if due_filter == "overdue":
+                    cases = [item for item in cases if item["overdue_follow_ups"]]
                 return self.send_json(cases)
             parts = self.api_parts(path)
             if len(parts) >= 2 and parts[0] == "cases":
@@ -232,6 +253,33 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     data["status"] = body["status"]
                 if "target_date" in body:
                     data["target_date"] = body["target_date"]
+                if "priority" in body:
+                    if body["priority"] not in {"low", "normal", "high", "urgent"}:
+                        raise WorkbenchError("invalid priority")
+                    data["priority"] = body["priority"]
+                if "tags" in body:
+                    data["tags"] = [str(item).strip()[:40] for item in body["tags"][:20] if str(item).strip()]
+                if "review_action" in body:
+                    action = body["review_action"]
+                    review = data.setdefault("review", {"status": "not_submitted", "submitted_at": "", "decided_at": "", "comments": []})
+                    user = self.current_user()
+                    if action == "submit":
+                        review["status"] = "pending"
+                        review["submitted_at"] = utc_now()
+                    elif action in {"approve", "return"}:
+                        if user.get("role") not in {"admin", "supervisor"}:
+                            return self.send_json({"error": "supervisor role required"}, HTTPStatus.FORBIDDEN)
+                        review["status"] = "approved" if action == "approve" else "corrections_requested"
+                        review["decided_at"] = utc_now()
+                    else:
+                        raise WorkbenchError("invalid review action")
+                    if body.get("review_comment"):
+                        review["comments"].append({"at": utc_now(), "by": user.get("username", ""), "text": str(body["review_comment"])[:4000]})
+                meta_keys = {key: body[key] for key in ("assigned_user_id", "supervisor_user_id", "retention_date", "archived") if key in body}
+                if meta_keys:
+                    if self.current_user().get("role") not in {"admin", "supervisor"}:
+                        return self.send_json({"error": "supervisor role required"}, HTTPStatus.FORBIDDEN)
+                    self.store.update_case_meta(data["case_id"], **meta_keys)
                 append_activity(data, "case_updated", "Case details updated")
             elif len(parts) == 4 and parts[2] == "inquiries":
                 item = self.find_item(data["inquiries"], parts[3])
