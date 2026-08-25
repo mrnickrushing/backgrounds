@@ -22,14 +22,13 @@ from .core import (
     WorkbenchError,
     append_activity,
     audit_case,
-    cases_root,
-    load_case,
     new_case,
     next_id,
     render_report,
-    save_case,
     utc_now,
 )
+from .security import verify_totp
+from .store import WorkbenchStore
 
 STATIC_ROOT = Path(__file__).with_name("static")
 
@@ -72,6 +71,10 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def data_root(self):
         return self.server.data_root  # type: ignore[attr-defined]
 
+    @property
+    def store(self):
+        return self.server.store  # type: ignore[attr-defined]
+
     def log_message(self, format, *args):
         if getattr(self.server, "quiet", False):  # type: ignore[attr-defined]
             return
@@ -90,19 +93,25 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 return self.send_static(path)
             if not self.require_auth(path):
                 return
+            if path == "/api/me":
+                user = self.current_user()
+                return self.send_json({key: user.get(key) for key in ("id", "username", "display_name", "role")})
+            if path == "/api/users":
+                if not self.require_role("admin"):
+                    return
+                return self.send_json(self.store.list_users())
+            if path == "/api/audit":
+                if not self.require_role("admin", "supervisor"):
+                    return
+                return self.send_json(self.store.audit_events(limit=200))
             if path == "/api/meta":
                 return self.send_json({"areas": AREA_LABELS, "dimensions": DIMENSION_LABELS, "case_statuses": CASE_STATUSES})
             if path == "/api/cases":
-                cases = []
-                for item in sorted(cases_root(self.data_root).glob("*/workbench.json")):
-                    try:
-                        cases.append(case_summary(json.loads(item.read_text(encoding="utf-8"))))
-                    except (OSError, ValueError, KeyError):
-                        continue
+                cases = [case_summary(item) for item in self.store.list_cases()]
                 return self.send_json(cases)
             parts = self.api_parts(path)
             if len(parts) >= 2 and parts[0] == "cases":
-                data = load_case(parts[1], self.data_root)
+                data = self.store.load_case(parts[1])
                 if len(parts) == 2:
                     return self.send_json({**data, "audit": audit_case(data)})
                 if len(parts) == 3 and parts[2] == "report":
@@ -123,14 +132,33 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if not self.require_auth(path):
                 return
             body = self.read_json()
+            if path == "/api/users":
+                if not self.require_role("admin"):
+                    return
+                user = self.store.create_user(body.get("username", ""), body.get("display_name", ""), body.get("password", ""), body.get("role", "investigator"), body.get("totp_secret", ""))
+                self.store.audit(self.current_user(), "user_created", detail=f"{user['username']}:{user['role']}", ip=self.client_address[0])
+                return self.send_json(user, HTTPStatus.CREATED)
+            if path == "/api/change-password":
+                user = self.current_user()
+                self.store.change_password(user["id"], body.get("current_password", ""), body.get("new_password", ""))
+                self.store.audit(user, "password_changed", ip=self.client_address[0])
+                return self.send_json({"status": "password changed; sign in again"})
+            if path == "/api/backups":
+                if not self.require_role("admin"):
+                    return
+                target = self.store.backup()
+                self.store.audit(self.current_user(), "backup_created", detail=target.name, ip=self.client_address[0])
+                return self.send_json({"status": "ok", "file": target.name}, HTTPStatus.CREATED)
+            if not self.require_role("admin", "supervisor", "investigator"):
+                return
             if path == "/api/cases":
                 data = new_case(body.get("case_id", ""), body.get("investigator", ""), body.get("target_date", ""))
-                save_case(data, self.data_root)
+                self.store.save_case(data, self.current_user(), "case_created")
                 return self.send_json({**data, "audit": audit_case(data)}, HTTPStatus.CREATED)
             parts = self.api_parts(path)
             if len(parts) != 3 or parts[0] != "cases":
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
-            data = load_case(parts[1], self.data_root)
+            data = self.store.load_case(parts[1])
             resource = parts[2]
             if resource == "inquiries":
                 if body.get("area") not in AREAS:
@@ -181,7 +209,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 append_activity(data, "source_added", item["id"])
             else:
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
-            save_case(data, self.data_root)
+            self.store.save_case(data, self.current_user(), f"{resource.rstrip('s')}_added", detail=item["id"])
             self.send_json(item, HTTPStatus.CREATED)
         except (WorkbenchError, ValueError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -190,11 +218,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         try:
             if not self.require_auth(urlparse(self.path).path):
                 return
+            if not self.require_role("admin", "supervisor", "investigator"):
+                return
             parts = self.api_parts(urlparse(self.path).path)
             if len(parts) < 2 or parts[0] != "cases":
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
             body = self.read_json()
-            data = load_case(parts[1], self.data_root)
+            data = self.store.load_case(parts[1])
             if len(parts) == 2:
                 if "status" in body:
                     if body["status"] not in CASE_STATUSES:
@@ -232,7 +262,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 append_activity(data, "section_updated", "bias_relevant_findings")
             else:
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
-            save_case(data, self.data_root)
+            self.store.save_case(data, self.current_user(), "case_updated")
             self.send_json({**data, "audit": audit_case(data)})
         except WorkbenchError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -254,18 +284,23 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             raise WorkbenchError("request too large")
         return json.loads(self.rfile.read(length) or b"{}")
 
-    def is_authenticated(self):
-        username = getattr(self.server, "auth_username", "")  # type: ignore[attr-defined]
-        password = getattr(self.server, "auth_password", "")  # type: ignore[attr-defined]
-        if not username or not password:
-            return True
-        cookies = {}
+    def session_token(self):
         for part in self.headers.get("Cookie", "").split(";"):
             if "=" in part:
                 key, value = part.strip().split("=", 1)
-                cookies[key] = value
-        secret = getattr(self.server, "session_secret", "")  # type: ignore[attr-defined]
-        return valid_session(cookies.get("workbench_session", ""), secret)
+                if key == "workbench_session":
+                    return value
+        return ""
+
+    def current_user(self):
+        username = getattr(self.server, "auth_username", "")  # type: ignore[attr-defined]
+        password = getattr(self.server, "auth_password", "")  # type: ignore[attr-defined]
+        if not username or not password:
+            return {"id": None, "username": "local", "role": "admin"}
+        return self.store.session_user(self.session_token())
+
+    def is_authenticated(self):
+        return bool(self.current_user())
 
     def require_auth(self, path):
         if self.is_authenticated():
@@ -276,17 +311,29 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             self.redirect("/login")
         return False
 
+    def require_role(self, *roles):
+        user = self.current_user()
+        if user and user.get("role") in roles:
+            return True
+        self.send_json({"error": "insufficient permissions"}, HTTPStatus.FORBIDDEN)
+        return False
+
     def login(self):
         length = min(int(self.headers.get("content-length", "0")), 16_384)
         form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
         supplied_username = form.get("username", [""])[0]
         supplied_password = form.get("password", [""])[0]
-        username = getattr(self.server, "auth_username", "")  # type: ignore[attr-defined]
-        password = getattr(self.server, "auth_password", "")  # type: ignore[attr-defined]
-        valid = bool(username and password) and hmac.compare_digest(supplied_username, username) and hmac.compare_digest(supplied_password, password)
-        if not valid:
+        supplied_totp = form.get("totp", [""])[0]
+        ip = self.client_address[0]
+        if self.store.login_blocked(supplied_username, ip):
+            self.store.audit(None, "login_throttled", detail=supplied_username, ip=ip)
             return self.redirect("/login?error=1")
-        token = create_session(getattr(self.server, "session_secret", ""))  # type: ignore[attr-defined]
+        user = self.store.authenticate(supplied_username, supplied_password)
+        valid = bool(user) and verify_totp(user.get("totp_secret", ""), supplied_totp)
+        self.store.record_login(supplied_username, ip, valid, user if valid else None)
+        if not valid or not user:
+            return self.redirect("/login?error=1")
+        token = self.store.create_session(user["id"], ip, self.headers.get("User-Agent", ""))
         secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", "/")
@@ -295,6 +342,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def logout(self):
+        user = self.current_user()
+        self.store.revoke_session(self.session_token())
+        self.store.audit(user, "logout", ip=self.client_address[0])
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", "/login")
         self.send_header("Set-Cookie", "workbench_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
@@ -309,7 +359,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 
     def send_login(self, error=""):
         error_html = f'<p class="login-error" role="alert">{error}</p>' if error else ""
-        html = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Investigator Workbench</title><link rel="stylesheet" href="/login.css"></head><body class="login-page"><main class="login-card"><div class="login-mark">IW</div><p class="eyebrow">Secure workspace</p><h1>Investigator Workbench</h1><p class="login-intro">Sign in to access your protected caseload.</p>{error_html}<form method="post" action="/login"><label>Username<input name="username" autocomplete="username" required autofocus></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form><p class="login-note">Authorized access only · Session expires after 12 hours</p></main></body></html>'''
+        html = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Investigator Workbench</title><link rel="stylesheet" href="/login.css"></head><body class="login-page"><main class="login-card"><div class="login-mark">IW</div><p class="eyebrow">Secure workspace</p><h1>Investigator Workbench</h1><p class="login-intro">Sign in to access your protected caseload.</p>{error_html}<form method="post" action="/login"><label>Username<input name="username" autocomplete="username" required autofocus></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><label>Authenticator code <span class="optional">if enabled</span><input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{{6}}" maxlength="6"></label><button type="submit">Sign in</button></form><p class="login-note">Authorized access only · Sessions lock after 30 minutes idle</p></main></body></html>'''
         self.send_text(html, "text/html; charset=utf-8")
 
     def send_json(self, value, status=HTTPStatus.OK):
@@ -358,6 +408,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 def serve(host="127.0.0.1", port=8765, data_root=None, quiet=False):
     server = ThreadingHTTPServer((host, port), WorkbenchHandler)
     server.data_root = data_root
+    server.store = WorkbenchStore(data_root)
     server.quiet = quiet
     server.auth_username = os.environ.get("WORKBENCH_USERNAME", "")
     server.auth_password = os.environ.get("WORKBENCH_PASSWORD", "")
@@ -366,8 +417,9 @@ def serve(host="127.0.0.1", port=8765, data_root=None, quiet=False):
         raise RuntimeError("WORKBENCH_USERNAME and WORKBENCH_PASSWORD must both be set")
     if server.auth_username and len(server.session_secret) < 32:
         raise RuntimeError("WORKBENCH_SESSION_SECRET must be at least 32 characters when authentication is enabled")
+    server.store.ensure_bootstrap_user(server.auth_username, server.auth_password, os.environ.get("WORKBENCH_TOTP_SECRET", ""))
     print(f"Investigator Workbench: http://{host}:{server.server_port}")
-    print(f"Case data: {cases_root(data_root)}")
+    print(f"Case data: {server.store.root}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
