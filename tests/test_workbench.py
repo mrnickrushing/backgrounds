@@ -6,6 +6,7 @@ from workbench.core import AREAS, DIMENSIONS, audit_case, load_case, new_case, r
 from workbench.security import hash_password, totp_code, verify_password, verify_totp
 from workbench.store import WorkbenchStore
 from workbench.web import case_summary, create_session, valid_session
+from workbench.exports import docx_export, json_export, pdf_export
 
 
 class WorkbenchTests(unittest.TestCase):
@@ -37,6 +38,24 @@ class WorkbenchTests(unittest.TestCase):
             self.assertTrue(backup.is_file())
             store.revoke_session(token)
             self.assertIsNone(store.session_user(token))
+
+    def test_exports_have_valid_container_signatures(self):
+        data = new_case("EXPORT-1")
+        self.assertTrue(pdf_export(data).startswith(b"%PDF-1.4"))
+        self.assertTrue(docx_export(data).startswith(b"PK"))
+        self.assertIn(b'"case_id": "EXPORT-1"', json_export(data))
+
+    def test_attachment_allowlist_hash_and_path_safety(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkbenchStore(directory)
+            store.save_case(new_case("FILES-1"), None, "case_created")
+            item = store.save_attachment("FILES-1", "../../record.pdf", "application/pdf", b"%PDF-1.4\nexample", None)
+            self.assertEqual(item["filename"], "record.pdf")
+            loaded, content = store.attachment(item["id"])
+            self.assertEqual(content, b"%PDF-1.4\nexample")
+            self.assertEqual(len(loaded["sha256"]), 64)
+            with self.assertRaises(ValueError):
+                store.save_attachment("FILES-1", "payload.exe", "application/octet-stream", b"MZ", None)
 
     def test_case_round_trip_uses_private_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
