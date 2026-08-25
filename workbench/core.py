@@ -106,6 +106,8 @@ def new_case(case_id: str, investigator: str = "", target_date: str = "") -> dic
         "case_id": case_id,
         "investigator": investigator,
         "status": "intake",
+        "priority": "normal",
+        "tags": [],
         "target_date": target_date,
         "created_at": now,
         "updated_at": now,
@@ -116,6 +118,7 @@ def new_case(case_id: str, investigator: str = "", target_date: str = "") -> dic
         "discrepancies": [],
         "interviews": [],
         "sources": [],
+        "review": {"status": "not_submitted", "submitted_at": "", "decided_at": "", "comments": []},
         "activity": [{"at": now, "action": "case_created", "detail": "Local workbench case initialized"}],
     }
 
