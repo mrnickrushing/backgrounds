@@ -1,7 +1,10 @@
 import tempfile
 import unittest
+from pathlib import Path
 
 from workbench.core import AREAS, DIMENSIONS, audit_case, load_case, new_case, render_report, save_case
+from workbench.security import hash_password, totp_code, verify_password, verify_totp
+from workbench.store import WorkbenchStore
 from workbench.web import case_summary, create_session, valid_session
 
 
@@ -11,6 +14,30 @@ class WorkbenchTests(unittest.TestCase):
         self.assertTrue(valid_session(token, "s" * 32, now=1_001))
         self.assertFalse(valid_session(token, "s" * 32, now=50_000))
         self.assertFalse(valid_session(token + "x", "s" * 32, now=1_001))
+
+    def test_password_hash_and_totp(self):
+        encoded = hash_password("a sufficiently long password")
+        self.assertTrue(verify_password("a sufficiently long password", encoded))
+        self.assertFalse(verify_password("the wrong password", encoded))
+        secret = "JBSWY3DPEHPK3PXP"
+        self.assertTrue(verify_totp(secret, totp_code(secret, at=1_000), at=1_000))
+
+    def test_store_case_session_audit_and_backup_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkbenchStore(directory)
+            store.ensure_bootstrap_user("admin", "a sufficiently long password")
+            user = store.authenticate("admin", "a sufficiently long password")
+            self.assertEqual(user["role"], "admin")
+            token = store.create_session(user["id"])
+            self.assertEqual(store.session_user(token)["username"], "admin")
+            store.save_case(new_case("DB-1"), user, "case_created")
+            self.assertEqual(store.load_case("DB-1")["case_id"], "DB-1")
+            self.assertEqual(store.audit_events("DB-1")[0]["action"], "case_created")
+            backup = store.backup(Path(directory) / "snapshot.db")
+            self.assertTrue(backup.is_file())
+            store.revoke_session(token)
+            self.assertIsNone(store.session_user(token))
+
     def test_case_round_trip_uses_private_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
             path = save_case(new_case("2026-0001", "Investigator"), directory)
