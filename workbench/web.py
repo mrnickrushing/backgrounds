@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .core import (
     AREAS,
@@ -28,6 +32,25 @@ from .core import (
 )
 
 STATIC_ROOT = Path(__file__).with_name("static")
+
+
+def create_session(secret, issued_at=None):
+    timestamp = str(int(issued_at if issued_at is not None else time.time()))
+    signature = hmac.new(secret.encode(), timestamp.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{timestamp}.{signature}".encode()).decode()
+
+
+def valid_session(token, secret, now=None, max_age=43_200):
+    if not token or not secret:
+        return False
+    try:
+        timestamp, signature = base64.urlsafe_b64decode(token.encode()).decode().split(".", 1)
+        issued_at = int(timestamp)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    expected = hmac.new(secret.encode(), timestamp.encode(), hashlib.sha256).hexdigest()
+    current = int(now if now is not None else time.time())
+    return hmac.compare_digest(signature, expected) and 0 <= current - issued_at <= max_age
 
 
 def case_summary(data):
@@ -57,6 +80,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             path = urlparse(self.path).path
+            if path == "/healthz":
+                return self.send_json({"status": "ok"})
+            if path == "/login":
+                if self.is_authenticated():
+                    return self.redirect("/")
+                return self.send_login("Invalid username or password." if "error=1" in self.path else "")
+            if path == "/login.css":
+                return self.send_static(path)
+            if not self.require_auth(path):
+                return
             if path == "/api/meta":
                 return self.send_json({"areas": AREA_LABELS, "dimensions": DIMENSION_LABELS, "case_statuses": CASE_STATUSES})
             if path == "/api/cases":
@@ -83,6 +116,12 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             path = urlparse(self.path).path
+            if path == "/login":
+                return self.login()
+            if path == "/logout":
+                return self.logout()
+            if not self.require_auth(path):
+                return
             body = self.read_json()
             if path == "/api/cases":
                 data = new_case(body.get("case_id", ""), body.get("investigator", ""), body.get("target_date", ""))
@@ -149,6 +188,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         try:
+            if not self.require_auth(urlparse(self.path).path):
+                return
             parts = self.api_parts(urlparse(self.path).path)
             if len(parts) < 2 or parts[0] != "cases":
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -213,11 +254,71 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             raise WorkbenchError("request too large")
         return json.loads(self.rfile.read(length) or b"{}")
 
+    def is_authenticated(self):
+        username = getattr(self.server, "auth_username", "")  # type: ignore[attr-defined]
+        password = getattr(self.server, "auth_password", "")  # type: ignore[attr-defined]
+        if not username or not password:
+            return True
+        cookies = {}
+        for part in self.headers.get("Cookie", "").split(";"):
+            if "=" in part:
+                key, value = part.strip().split("=", 1)
+                cookies[key] = value
+        secret = getattr(self.server, "session_secret", "")  # type: ignore[attr-defined]
+        return valid_session(cookies.get("workbench_session", ""), secret)
+
+    def require_auth(self, path):
+        if self.is_authenticated():
+            return True
+        if path.startswith("/api/"):
+            self.send_json({"error": "authentication required"}, HTTPStatus.UNAUTHORIZED)
+        else:
+            self.redirect("/login")
+        return False
+
+    def login(self):
+        length = min(int(self.headers.get("content-length", "0")), 16_384)
+        form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
+        supplied_username = form.get("username", [""])[0]
+        supplied_password = form.get("password", [""])[0]
+        username = getattr(self.server, "auth_username", "")  # type: ignore[attr-defined]
+        password = getattr(self.server, "auth_password", "")  # type: ignore[attr-defined]
+        valid = bool(username and password) and hmac.compare_digest(supplied_username, username) and hmac.compare_digest(supplied_password, password)
+        if not valid:
+            return self.redirect("/login?error=1")
+        token = create_session(getattr(self.server, "session_secret", ""))  # type: ignore[attr-defined]
+        secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", "/")
+        self.send_header("Set-Cookie", f"workbench_session={token}; Path=/; Max-Age=43200; HttpOnly; SameSite=Strict{secure}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def logout(self):
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", "/login")
+        self.send_header("Set-Cookie", "workbench_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def redirect(self, location):
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def send_login(self, error=""):
+        error_html = f'<p class="login-error" role="alert">{error}</p>' if error else ""
+        html = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Investigator Workbench</title><link rel="stylesheet" href="/login.css"></head><body class="login-page"><main class="login-card"><div class="login-mark">IW</div><p class="eyebrow">Secure workspace</p><h1>Investigator Workbench</h1><p class="login-intro">Sign in to access your protected caseload.</p>{error_html}<form method="post" action="/login"><label>Username<input name="username" autocomplete="username" required autofocus></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form><p class="login-note">Authorized access only · Session expires after 12 hours</p></main></body></html>'''
+        self.send_text(html, "text/html; charset=utf-8")
+
     def send_json(self, value, status=HTTPStatus.OK):
         payload = json.dumps(value).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -227,13 +328,18 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
 
     def send_static(self, path):
-        relative = "index.html" if path in {"/", ""} else path.lstrip("/")
-        target = (STATIC_ROOT / relative).resolve()
+        if path == "/login.css":
+            target = STATIC_ROOT / "login.css"
+        else:
+            relative = "index.html" if path in {"/", ""} else path.lstrip("/")
+            target = (STATIC_ROOT / relative).resolve()
         if STATIC_ROOT.resolve() not in target.parents and target != STATIC_ROOT.resolve():
             return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         if not target.is_file():
@@ -242,6 +348,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mimetypes.guess_type(target)[0] or "application/octet-stream")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -251,6 +359,13 @@ def serve(host="127.0.0.1", port=8765, data_root=None, quiet=False):
     server = ThreadingHTTPServer((host, port), WorkbenchHandler)
     server.data_root = data_root
     server.quiet = quiet
+    server.auth_username = os.environ.get("WORKBENCH_USERNAME", "")
+    server.auth_password = os.environ.get("WORKBENCH_PASSWORD", "")
+    server.session_secret = os.environ.get("WORKBENCH_SESSION_SECRET", "")
+    if bool(server.auth_username) != bool(server.auth_password):
+        raise RuntimeError("WORKBENCH_USERNAME and WORKBENCH_PASSWORD must both be set")
+    if server.auth_username and len(server.session_secret) < 32:
+        raise RuntimeError("WORKBENCH_SESSION_SECRET must be at least 32 characters when authentication is enabled")
     print(f"Investigator Workbench: http://{host}:{server.server_port}")
     print(f"Case data: {cases_root(data_root)}")
     try:

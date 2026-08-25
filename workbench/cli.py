@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -112,7 +113,7 @@ def parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--json", action="store_true")
     serve = sub.add_parser("serve", help="run the local browser workbench")
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8765")))
     return command
 
 

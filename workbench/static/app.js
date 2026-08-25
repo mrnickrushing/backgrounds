@@ -3,7 +3,7 @@ const app=document.querySelector('#app'),modal=document.querySelector('#modal'),
 const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const label=s=>String(s).replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
 const fmtDate=s=>s?new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(new Date(`${s}T12:00:00`)):'Not set';
-const request=async(path,options={})=>{const res=await fetch(path,{headers:{'Content-Type':'application/json'},...options});const data=await res.json();if(!res.ok)throw new Error(data.error||'Request failed');return data};
+const request=async(path,options={})=>{const res=await fetch(path,{headers:{'Content-Type':'application/json'},...options});if(res.status===401){location.href='/login';throw new Error('Session expired')}const data=await res.json();if(!res.ok)throw new Error(data.error||'Request failed');return data};
 function toast(message){const node=document.querySelector('#toast');node.textContent=message;node.classList.add('show');setTimeout(()=>node.classList.remove('show'),2200)}
 function status(value){return `<span class="status ${esc(value)}">${esc(label(value))}</span>`}
 function progress(done,total){const pct=total?Math.round(done/total*100):0;return `<div class="progress"><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><small>${done} of ${total} complete</small></div>`}

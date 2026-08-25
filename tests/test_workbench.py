@@ -2,10 +2,15 @@ import tempfile
 import unittest
 
 from workbench.core import AREAS, DIMENSIONS, audit_case, load_case, new_case, render_report, save_case
-from workbench.web import case_summary
+from workbench.web import case_summary, create_session, valid_session
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_signed_session_expires_and_rejects_tampering(self):
+        token = create_session("s" * 32, issued_at=1_000)
+        self.assertTrue(valid_session(token, "s" * 32, now=1_001))
+        self.assertFalse(valid_session(token, "s" * 32, now=50_000))
+        self.assertFalse(valid_session(token + "x", "s" * 32, now=1_001))
     def test_case_round_trip_uses_private_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
             path = save_case(new_case("2026-0001", "Investigator"), directory)
