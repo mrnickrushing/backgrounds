@@ -52,7 +52,19 @@ python3 -m workbench serve
 
 Then open `http://127.0.0.1:8765`. The server binds only to the local machine by default. Use `--cases-dir` to point it at an approved encrypted location.
 
-Remote deployments must set `WORKBENCH_USERNAME`, `WORKBENCH_PASSWORD`, and a random `WORKBENCH_SESSION_SECRET` of at least 32 characters. The login page issues a secure, HTTP-only session cookie that expires after 12 hours. Railway deployments should mount persistent storage at `/data`; `/healthz` exposes only service health and no case information.
+Remote deployments must set `WORKBENCH_USERNAME`, `WORKBENCH_PASSWORD`, and a random `WORKBENCH_SESSION_SECRET` of at least 32 characters. The login page issues a secure, HTTP-only session cookie with a 12-hour absolute lifetime and 30-minute idle lock. Railway deployments should mount persistent storage at `/data`; `/healthz` exposes only service health and version information.
+
+### Hosted production capabilities
+
+- Transactional SQLite/WAL storage on the persistent Railway volume, with automatic migration of earlier JSON workspaces.
+- Individual admin, supervisor, investigator, and reviewer accounts with scrypt password hashes, login throttling, revocable sessions, and optional authenticator MFA.
+- Searchable caseload, due-state and overdue intelligence, priority, tags, assignment metadata, supervisor review, corrections, approval, retention, and archive controls.
+- Controlled PDF/PNG/JPEG/text attachments outside the web root with strict limits, safe names, SHA-256 verification, and audited downloads.
+- DOCX, PDF, and JSON case exports.
+- Append-only application audit events, daily integrity-checked snapshots, manual verified backups, database readiness checks, deployed-version reporting, request IDs, and privacy-safe structured logs.
+- An Account screen for users, roles, password changes, MFA enrollment, backups, system health, and recent audit activity.
+
+See the [operations and recovery runbook](docs/OPERATIONS_RUNBOOK.md), [security policy](SECURITY.md), and [delivery plan](docs/DELIVERY_PLAN.md). Agency identity, eSOPH, records, email, off-volume backup, and retention-destruction integrations remain disabled until the responsible system owner supplies written authorization and supported interfaces.
 
 See the [desk guide](docs/INVESTIGATOR_DESK_GUIDE.md), [interview outlines](docs/INTERVIEW_QUESTION_OUTLINES.md), [writing guide](docs/REPORT_WRITING_GUIDE.md), and [product requirements](docs/PRODUCT_REQUIREMENTS.md).
 

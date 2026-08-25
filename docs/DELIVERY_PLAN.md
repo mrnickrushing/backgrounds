@@ -1,5 +1,7 @@
 # Production Delivery Plan
 
+Status: application-controlled work completed and released on 2026-08-25. Owner-gated integrations remain intentionally disabled as described below.
+
 This plan turns the Investigator Workbench prototype into a safer operational application. Each wave is independently releasable and must pass its gates before merge and deployment.
 
 ## Wave 1 - Identity, durable data, and auditability
