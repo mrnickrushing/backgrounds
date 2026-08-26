@@ -10,6 +10,7 @@ import os
 import time
 import threading
 import uuid
+from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,11 +20,18 @@ from .core import (
     AREAS,
     AREA_LABELS,
     CASE_STATUSES,
+    DOCUMENT_STATUSES,
     DIMENSIONS,
     DIMENSION_LABELS,
+    build_inquiries_from_templates,
+    daily_queue,
+    inquiry_template_preview,
+    template_lookup,
+    TIMELINE_CATEGORIES,
     WorkbenchError,
     append_activity,
     audit_case,
+    normalize_case,
     new_case,
     next_id,
     render_report,
@@ -69,6 +77,10 @@ def case_summary(data):
         "tags": data.get("tags", []),
         "review_status": data.get("review", {}).get("status", "not_submitted"),
         "overdue_follow_ups": overdue,
+        "timeline_items": len(data.get("timeline", [])),
+        "document_items": len(data.get("documents", [])),
+        "open_documents": sum(1 for item in data.get("documents", []) if item.get("status") in {"needed", "requested", "returned"}),
+        "open_phs_changes": sum(1 for item in data.get("phs_changes", []) if not str(item.get("disposition", "")).strip()),
         "assigned_user_id": data.get("record_meta", {}).get("assigned_user_id"),
         "supervisor_user_id": data.get("record_meta", {}).get("supervisor_user_id"),
         **audit["metrics"],
@@ -131,9 +143,25 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     return
                 return self.send_json({**self.store.health(), "version": getattr(self.server, "version", "dev")})
             if path == "/api/templates":
-                return self.send_json({"inquiries": ["Initial records request", "First follow-up", "Final nonresponse follow-up"], "interviews": ["Pre-Investigatory Interview", "Employment verification", "Reference interview", "Discrepancy clarification"]})
+                return self.send_json({
+                    "inquiries": [dict(template) for template in template_lookup().values()],
+                    "interviews": ["Pre-Investigatory Interview", "Employment verification", "Reference interview", "Discrepancy clarification"],
+                    "timeline": ["Employment history", "Residence history", "Education history", "Military history"],
+                    "documents": ["Release form", "Employment verification", "Education records", "Court document"],
+                })
+            if path == "/api/queue":
+                return self.send_json({
+                    "generated_at": utc_now(),
+                    "items": daily_queue(self.store.list_cases()),
+                })
             if path == "/api/meta":
-                return self.send_json({"areas": AREA_LABELS, "dimensions": DIMENSION_LABELS, "case_statuses": CASE_STATUSES})
+                return self.send_json({
+                    "areas": AREA_LABELS,
+                    "dimensions": DIMENSION_LABELS,
+                    "case_statuses": CASE_STATUSES,
+                    "timeline_categories": {key: key.replace("_", " ").title() for key in TIMELINE_CATEGORIES},
+                    "document_statuses": {key: key.replace("_", " ").title() for key in DOCUMENT_STATUSES},
+                })
             if path == "/api/cases":
                 query = parse_qs(urlparse(self.path).query)
                 cases = [case_summary(item) for item in self.store.list_cases(query.get("archived", [""])[0] == "1")]
@@ -240,7 +268,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 self.store.save_case(data, self.current_user(), "case_created")
                 return self.send_json({**data, "audit": audit_case(data)}, HTTPStatus.CREATED)
             parts = self.api_parts(path)
-            if len(parts) != 3 or parts[0] != "cases":
+            if len(parts) < 3 or parts[0] != "cases":
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
             data = self.store.load_case(parts[1])
             resource = parts[2]
@@ -251,6 +279,22 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     raise WorkbenchError("attachment content is not valid base64") from exc
                 item = self.store.save_attachment(data["case_id"], body.get("filename", ""), body.get("media_type", ""), content, self.current_user())
                 return self.send_json(item, HTTPStatus.CREATED)
+            if resource == "inquiries" and len(parts) == 4 and parts[3] == "batch":
+                template_ids = body.get("template_ids", [])
+                if not isinstance(template_ids, list) or not template_ids:
+                    raise WorkbenchError("template_ids must be a non-empty list")
+                follow_up_due = str(body.get("follow_up_due", ""))
+                preview = inquiry_template_preview(template_ids, follow_up_due)
+                if not preview:
+                    raise WorkbenchError("no valid templates selected")
+                created = build_inquiries_from_templates(data, template_ids, follow_up_due)
+                if not created:
+                    raise WorkbenchError("selected templates are already represented")
+                for item in created:
+                    data["inquiries"].append(item)
+                    append_activity(data, "inquiry_added", f"{item['id']} from {item.get('template_id', 'template')}")
+                self.store.save_case(data, self.current_user(), "case_updated")
+                return self.send_json({"created": created, "preview": preview}, HTTPStatus.CREATED)
             if resource == "inquiries":
                 if body.get("area") not in AREAS:
                     raise WorkbenchError("invalid investigation area")
@@ -265,6 +309,72 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     raise WorkbenchError("source type and label are required")
                 data["inquiries"].append(item)
                 append_activity(data, "inquiry_added", item["id"])
+            elif resource == "timeline":
+                if body.get("category", "other") not in TIMELINE_CATEGORIES:
+                    raise WorkbenchError("invalid timeline category")
+                if body.get("source_ids", []) and not isinstance(body.get("source_ids"), list):
+                    raise WorkbenchError("timeline source identifiers must be a list")
+                item = {
+                    "id": next_id(data["timeline"], "TIM"),
+                    "category": body.get("category", "other"),
+                    "label": body.get("label", ""),
+                    "start_date": body.get("start_date", ""),
+                    "end_date": body.get("end_date", ""),
+                    "source_ids": body.get("source_ids", []),
+                    "notes": body.get("notes", ""),
+                    "created_at": date.today().isoformat(),
+                    "updated_at": "",
+                }
+                if not item["label"] or not item["start_date"]:
+                    raise WorkbenchError("timeline label and start date are required")
+                data["timeline"].append(item)
+                append_activity(data, "timeline_added", item["id"])
+            elif resource == "documents":
+                if body.get("status", "needed") not in DOCUMENT_STATUSES:
+                    raise WorkbenchError("invalid document status")
+                if body.get("required_original") not in {None, True, False, 0, 1, ""} and not isinstance(body.get("required_original"), bool):
+                    raise WorkbenchError("required_original must be a boolean")
+                item = {
+                    "id": next_id(data["documents"], "DOC"),
+                    "title": body.get("title", ""),
+                    "status": body.get("status", "needed"),
+                    "due_date": body.get("due_date", ""),
+                    "received_at": body.get("received_at", ""),
+                    "verified_at": body.get("verified_at", ""),
+                    "returned_at": body.get("returned_at", ""),
+                    "source_locator": body.get("source_locator", ""),
+                    "notes": body.get("notes", ""),
+                    "required_original": bool(body.get("required_original")),
+                    "created_at": date.today().isoformat(),
+                    "updated_at": "",
+                }
+                if not item["title"]:
+                    raise WorkbenchError("document title is required")
+                today = date.today().isoformat()
+                if item["status"] == "received" and not item["received_at"]:
+                    item["received_at"] = today
+                if item["status"] == "verified" and not item["verified_at"]:
+                    item["verified_at"] = today
+                if item["status"] == "returned" and not item["returned_at"]:
+                    item["returned_at"] = today
+                data["documents"].append(item)
+                append_activity(data, "document_added", item["id"])
+            elif resource == "phs-changes":
+                if body.get("source_ids", []) and not isinstance(body.get("source_ids"), list):
+                    raise WorkbenchError("phs source identifiers must be a list")
+                item = {
+                    "id": next_id(data["phs_changes"], "PHS"),
+                    "field_label": body.get("field_label", ""),
+                    "prior_value": body.get("prior_value", ""),
+                    "current_value": body.get("current_value", ""),
+                    "reported_at": body.get("reported_at", "") or date.today().isoformat(),
+                    "source_ids": body.get("source_ids", []),
+                    "disposition": body.get("disposition", ""),
+                }
+                if not item["field_label"] or item["prior_value"] == "" or item["current_value"] == "":
+                    raise WorkbenchError("field label, prior value, and current value are required")
+                data["phs_changes"].append(item)
+                append_activity(data, "phs_change_added", item["id"])
             elif resource == "discrepancies":
                 if body.get("area") not in AREAS:
                     raise WorkbenchError("invalid investigation area")
@@ -373,6 +483,54 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     if key in body:
                         item[key] = body[key]
                 append_activity(data, "discrepancy_updated", item["id"])
+            elif len(parts) == 4 and parts[2] == "timeline":
+                item = self.find_item(data["timeline"], parts[3])
+                if "category" in body:
+                    if body["category"] not in TIMELINE_CATEGORIES:
+                        raise WorkbenchError("invalid timeline category")
+                    item["category"] = body["category"]
+                for key in ("label", "start_date", "end_date", "notes"):
+                    if key in body:
+                        item[key] = body[key]
+                if "source_ids" in body:
+                    item["source_ids"] = body["source_ids"]
+                item["updated_at"] = date.today().isoformat()
+                append_activity(data, "timeline_updated", item["id"])
+            elif len(parts) == 4 and parts[2] == "documents":
+                item = self.find_item(data["documents"], parts[3])
+                if "status" in body:
+                    if body["status"] not in DOCUMENT_STATUSES:
+                        raise WorkbenchError("invalid document status")
+                    item["status"] = body["status"]
+                for key in ("title", "due_date", "received_at", "verified_at", "returned_at", "source_locator", "notes"):
+                    if key in body:
+                        item[key] = body[key]
+                if "required_original" in body:
+                    item["required_original"] = bool(body["required_original"])
+                today = date.today().isoformat()
+                if item["status"] == "received" and not item.get("received_at"):
+                    item["received_at"] = today
+                if item["status"] == "verified" and not item.get("verified_at"):
+                    item["verified_at"] = today
+                if item["status"] == "returned" and not item.get("returned_at"):
+                    item["returned_at"] = today
+                item["updated_at"] = date.today().isoformat()
+                append_activity(data, "document_updated", item["id"])
+            elif len(parts) == 4 and parts[2] == "phs-changes":
+                item = self.find_item(data["phs_changes"], parts[3])
+                for key in ("field_label", "prior_value", "current_value", "reported_at", "disposition"):
+                    if key in body:
+                        item[key] = body[key]
+                if "source_ids" in body:
+                    if not isinstance(body["source_ids"], list):
+                        raise WorkbenchError("phs source identifiers must be a list")
+                    item["source_ids"] = body["source_ids"]
+                if not item.get("field_label") or item.get("prior_value", "") == "" or item.get("current_value", "") == "":
+                    raise WorkbenchError("field label, prior value, and current value are required")
+                if not item.get("reported_at"):
+                    item["reported_at"] = date.today().isoformat()
+                item["updated_at"] = date.today().isoformat()
+                append_activity(data, "phs_change_updated", item["id"])
             elif len(parts) == 4 and parts[2] in {"areas", "dimensions"}:
                 collection = data[parts[2]]
                 if parts[3] not in collection:
