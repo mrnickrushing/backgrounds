@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 from workbench.core import AREAS, DIMENSIONS, WorkbenchError, audit_case, build_inquiries_from_templates, command_center, daily_queue, discrepancy_matrix, inquiry_template_preview, interview_plan_findings, load_case, new_case, phs_findings, render_report, save_case, source_trace_map, timeline_findings, validate_case_package
@@ -142,13 +143,15 @@ class WorkbenchTests(unittest.TestCase):
         self.assertIn("supervisor_return", kinds)
 
     def test_command_center_groups_work_by_time_and_role(self):
+        today = date.today().isoformat()
+        this_week = (date.today() + timedelta(days=3)).isoformat()
         center = command_center([
             {
                 "case_id": "CENTER-1",
-                "target_date": "2026-08-25",
+                "target_date": today,
                 "review": {"status": "pending"},
                 "inquiries": [
-                    {"id": "INQ-1", "source_label": "Employer", "status": "sent", "follow_up_due": "2026-08-25", "release_required": True, "release_attached": False},
+                    {"id": "INQ-1", "source_label": "Employer", "status": "sent", "follow_up_due": this_week, "release_required": True, "release_attached": False},
                 ],
             }
         ], role="supervisor")
