@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from workbench.core import AREAS, DIMENSIONS, WorkbenchError, audit_case, build_inquiries_from_templates, daily_queue, discrepancy_matrix, inquiry_template_preview, load_case, new_case, phs_findings, render_report, save_case, timeline_findings, validate_case_package
+from workbench.core import AREAS, DIMENSIONS, WorkbenchError, audit_case, build_inquiries_from_templates, daily_queue, discrepancy_matrix, inquiry_template_preview, interview_plan_findings, load_case, new_case, phs_findings, render_report, save_case, source_trace_map, timeline_findings, validate_case_package
 from workbench.security import hash_password, totp_code, verify_password, verify_totp
 from workbench.store import WorkbenchStore
 from workbench.web import case_summary, create_session, valid_session
@@ -140,6 +140,19 @@ class WorkbenchTests(unittest.TestCase):
         self.assertIn("missing_release", kinds)
         self.assertIn("overdue_follow_up", kinds)
         self.assertIn("supervisor_return", kinds)
+
+    def test_interview_plan_findings_and_source_trace_map(self):
+        findings = interview_plan_findings([
+            {"id": "PLN-1", "subject": "Reference packet", "question": "Clarify address history", "source_ids": [], "discrepancy_ids": [], "recording_locator": ""},
+        ])
+        self.assertTrue(any(item["kind"] == "missing_source" for item in findings))
+        self.assertTrue(any(item["kind"] == "missing_locator" for item in findings))
+        data = new_case("TRACE-1")
+        data["sources"].append({"id": "SRC-1", "label": "Employer file", "kind": "record", "location": "SYS-1"})
+        data["areas"]["employment_history"]["source_ids"] = ["SRC-1", "SRC-X"]
+        trace = source_trace_map(data)
+        self.assertEqual(trace["sources"][0]["references"], ["Area narrative: Employment History Checks"])
+        self.assertEqual(trace["orphan_source_ids"], ["SRC-X"])
 
     def test_legacy_case_is_normalized_on_load(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -184,6 +184,7 @@ async function caseView(id) {
     ["discrepancies", "Discrepancies"],
     ["interviews", "Interviews"],
     ["sources", "Sources"],
+    ["trace", "Trace"],
     ["phs", "PHS"],
     ["timeline", "Timeline"],
     ["documents", "Documents"],
@@ -248,13 +249,13 @@ function renderTab() {
   else if (state.tab === "discrepancies")
     node.innerHTML = `<div class="section-toolbar"><div><p class="eyebrow">Discrepancy comparer</p><h3>Candidate statement matrix</h3><p>Compare the candidate account, contrary information, response, corroboration, and resolution in one view.</p></div><button class="secondary" data-action="add-discrepancy">Add</button></div>${discrepancyMatrix(c.discrepancies)}<div class="section-toolbar"><div><h3>Discrepancy log</h3><span class="subtle">Keep the full evidentiary trail attached to each conflict.</span></div></div><div class="cards">${c.discrepancies.map((x) => `<div class="record"><div><h4>${esc(x.title)} <span class="subtle">${esc(x.id)} · ${esc(state.meta.areas[x.area])}</span></h4><p><strong>Candidate:</strong> ${esc(x.candidate_statement)}<br><strong>Contrary:</strong> ${esc(x.contrary_information)}</p></div><div class="record-actions">${status(x.status)}<button class="quiet" data-edit-discrepancy="${x.id}">Update</button></div></div>`).join("") || '<div class="empty"><strong>No discrepancies recorded</strong>Add the first conflict when it appears.</div>'}</div>`;
   else if (state.tab === "interviews")
-    node.innerHTML = records(
+    node.innerHTML = interviewPlanWorkspace(c) + records(
       "Interviews",
       "Document the event and approved recording locator.",
       c.interviews,
       "add-interview",
       (x) =>
-        `<div class="record"><div><h4>${esc(label(x.kind))} <span class="subtle">${esc(x.id)} · ${fmtDate(x.date)}</span></h4><p>${esc(x.participant_role)}${x.notes ? ` · ${esc(x.notes)}` : ""}</p></div><div>${x.uploaded_to_esoph ? status("complete") : status("planned")}</div></div>`,
+        `<div class="record"><div><h4>${esc(label(x.kind))} <span class="subtle">${esc(x.id)} · ${fmtDate(x.date)}</span></h4><p>${esc(x.participant_role)}${x.notes ? ` · ${esc(x.notes)}` : ""}${x.recording_locator ? `<br>${esc(x.recording_locator)}` : ""}</p></div><div>${x.uploaded_to_esoph ? status("complete") : status("planned")}</div></div>`,
     );
   else if (state.tab === "sources")
     node.innerHTML = records(
@@ -265,6 +266,8 @@ function renderTab() {
       (x) =>
         `<div class="record"><div><h4>${esc(x.label)} <span class="subtle">${esc(x.id)} · ${esc(label(x.kind))}</span></h4><p>${esc(x.location)}${x.notes ? ` · ${esc(x.notes)}` : ""}</p></div></div>`,
     );
+  else if (state.tab === "trace")
+    node.innerHTML = traceWorkspace(c);
   else if (state.tab === "phs")
     node.innerHTML = records(
       "PHS change ledger",
@@ -306,7 +309,7 @@ function renderChecklist(c) {
     .querySelector("#tabContent")
     ?.insertAdjacentHTML(
       "afterbegin",
-      `<section class="readiness-plan"><div><p class="eyebrow">Guided case plan</p><h3>${incomplete ? `${incomplete} steps still need attention` : "Case is ready for final review"}</h3><p>Use this sequence to keep the file reviewable. It does not replace agency policy or supervisor direction.</p></div><div class="checklist">${items.map((item) => `<div class="check-item ${item.complete ? "complete" : ""}"><span>${item.complete ? "✓" : "○"}</span><div><strong>${esc(item.label)}</strong>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></div>`).join("")}</div></section>${(c.audit.timeline_findings || []).length || (c.audit.document_findings || []).length || (c.audit.phs_findings || []).length ? `<section class="readiness-plan"><div><p class="eyebrow">Review prompts</p><h3>Timeline, PHS, and document follow-up</h3><p>These are neutral prompts for review, not conclusions.</p></div><div class="issues">${(c.audit.timeline_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}${(c.audit.phs_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}${(c.audit.document_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}</div></section>` : ""}`,
+      `<section class="readiness-plan"><div><p class="eyebrow">Guided case plan</p><h3>${incomplete ? `${incomplete} steps still need attention` : "Case is ready for final review"}</h3><p>Use this sequence to keep the file reviewable. It does not replace agency policy or supervisor direction.</p></div><div class="checklist">${items.map((item) => `<div class="check-item ${item.complete ? "complete" : ""}"><span>${item.complete ? "✓" : "○"}</span><div><strong>${esc(item.label)}</strong>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></div>`).join("")}</div></section>${(c.audit.timeline_findings || []).length || (c.audit.document_findings || []).length || (c.audit.phs_findings || []).length || (c.audit.interview_plan_findings || []).length || (c.audit.source_trace_map?.orphan_source_ids || []).length ? `<section class="readiness-plan"><div><p class="eyebrow">Review prompts</p><h3>Timeline, interviews, traceability, and document follow-up</h3><p>These are neutral prompts for review, not conclusions.</p></div><div class="issues">${(c.audit.timeline_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}${(c.audit.phs_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}${(c.audit.document_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}${(c.audit.interview_plan_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}${(c.audit.source_trace_map?.orphan_source_ids || []).map((item) => `<div class="issue">Unregistered source identifier referenced: ${esc(item)}</div>`).join("")}</div></section>` : ""}`,
     );
 }
 async function attachmentsWorkspace() {
@@ -412,6 +415,16 @@ function fmtDateISOPlus(days) {
   date.setDate(date.getDate() + Number(days || 0));
   return date.toISOString().slice(0, 10);
 }
+function listOrNone(items) {
+  return items && items.length ? items.map((x) => esc(x)).join(" · ") : "None linked";
+}
+function interviewPlanWorkspace(c) {
+  return `<section class="readiness-plan"><div><p class="eyebrow">Interview planning</p><h3>Planning packets</h3><p>Link the topic, the source identifiers, any related discrepancies, and the approved recording locator before the interview happens.</p></div><div class="section-toolbar"><span class="subtle">${c.interview_plans.length} packets</span><button class="secondary" data-action="add-interview-plan">Add packet</button></div><div class="cards">${c.interview_plans.map((x) => `<div class="record"><div><h4>${esc(x.subject)} <span class="subtle">${esc(x.id)}</span></h4><p>${esc(x.question)}<br><strong>Sources:</strong> ${listOrNone(x.source_ids || [])}<br><strong>Discrepancies:</strong> ${listOrNone(x.discrepancy_ids || [])}<br><strong>Locator:</strong> ${esc(x.recording_locator || "Not entered")}${x.notes ? `<br>${esc(x.notes)}` : ""}</p></div><div class="record-actions">${status(x.status || "planned")}<button class="quiet" data-edit-interview-plan="${x.id}">Update</button></div></div>`).join("") || '<div class="empty"><strong>No interview plans recorded</strong>Add a packet before interviewing or clarifying discrepancies.</div>'}</div></section>`;
+}
+function traceWorkspace(c) {
+  const trace = c.audit.source_trace_map || { sources: [], orphan_source_ids: [] };
+  return `<section class="readiness-plan"><div><p class="eyebrow">Traceability</p><h3>Source-to-finding map</h3><p>Every registered source should show where it is cited. Unregistered identifiers are surfaced separately so they can be corrected.</p></div><div class="stat-grid"><div class="stat"><div class="stat-label">Registered sources</div><div class="stat-value">${trace.sources.length}</div></div><div class="stat"><div class="stat-label">Unregistered refs</div><div class="stat-value">${trace.orphan_source_ids.length}</div></div></div><div class="record-list">${trace.sources.map((x) => `<div class="record"><div><h4>${esc(x.source_id)} <span class="subtle">${esc(x.label)}</span></h4><p>${esc(x.kind || "Source")}${x.location ? ` · ${esc(x.location)}` : ""}<br><strong>References:</strong> ${listOrNone(x.references || [])}</p></div></div>`).join("") || '<div class="empty"><strong>No registered sources</strong>Add a source before expecting trace links.</div>'}</div>${trace.orphan_source_ids.length ? `<div class="issues">${trace.orphan_source_ids.map((id) => `<div class="issue">Unregistered source identifier referenced: ${esc(id)}</div>`).join("")}</div>` : ""}</section>`;
+}
 function discrepancyMatrix(items) {
   if (!items.length)
     return '<div class="empty"><strong>No discrepancies recorded</strong>Add the first conflict when it appears.</div>';
@@ -492,6 +505,9 @@ function bindTabActions() {
     .querySelector("[data-action=add-interview]")
     ?.addEventListener("click", addInterview);
   document
+    .querySelector("[data-action=add-interview-plan]")
+    ?.addEventListener("click", addInterviewPlan);
+  document
     .querySelector("[data-action=add-source]")
     ?.addEventListener("click", addSource);
   document
@@ -528,6 +544,9 @@ function bindTabActions() {
   document
     .querySelectorAll("[data-edit-document]")
     .forEach((x) => (x.onclick = () => editDocument(x.dataset.editDocument)));
+  document
+    .querySelectorAll("[data-edit-interview-plan]")
+    .forEach((x) => (x.onclick = () => editInterviewPlan(x.dataset.editInterviewPlan)));
   if (state.tab === "inquiries") {
     document.querySelectorAll(".template-select").forEach((x) => (x.onchange = refreshBatchPreview));
     const due = document.querySelector("#batchFollowUp");
@@ -742,6 +761,88 @@ function addInterview() {
       await caseView(state.current.case_id);
     },
   });
+}
+function interviewPlanBody(item = {}) {
+  return (
+    field("subject", "Packet subject", "text", {
+      required: true,
+      placeholder: "Pre-Investigatory Interview",
+      value: item.subject || "",
+    }) +
+    field("question", "Planned question or topic", "textarea", {
+      required: true,
+      full: true,
+      placeholder: "What should be covered, verified, or clarified?",
+      value: item.question || "",
+    }) +
+    field("status", "Status", "select", {
+      options: Object.entries(state.meta.interview_plan_statuses || {}).map(([value, label]) => ({
+        value,
+        label,
+      })),
+    }) +
+    field("source_ids", "Source identifiers", "text", {
+      full: true,
+      value: (item.source_ids || []).join(", "),
+      placeholder: "SRC-0001, SRC-0002",
+    }) +
+    field("discrepancy_ids", "Related discrepancy IDs", "text", {
+      full: true,
+      value: (item.discrepancy_ids || []).join(", "),
+      placeholder: "DSC-0001, DSC-0002",
+    }) +
+    field("recording_locator", "Approved recording locator", "text", {
+      full: true,
+      value: item.recording_locator || "",
+      placeholder: "eSOPH / secure storage locator",
+    }) +
+    field("notes", "Notes", "textarea", { full: true, value: item.notes || "" })
+  );
+}
+function addInterviewPlan() {
+  openModal({
+    title: "Add interview packet",
+    body: interviewPlanBody(),
+    onSubmit: async (d) => {
+      d.source_ids = d.source_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      d.discrepancy_ids = d.discrepancy_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/interview-plans`,
+        { method: "POST", body: JSON.stringify(d) },
+      );
+      state.tab = "interviews";
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function editInterviewPlan(id) {
+  const item = state.current.interview_plans.find((x) => x.id === id);
+  openModal({
+    title: `Update ${id}`,
+    body: interviewPlanBody(item),
+    onSubmit: async (d) => {
+      d.source_ids = d.source_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      d.discrepancy_ids = d.discrepancy_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/interview-plans/${id}`,
+        { method: "PATCH", body: JSON.stringify(d) },
+      );
+      await caseView(state.current.case_id);
+    },
+  });
+  document.querySelector("[name=status]").value = item.status;
 }
 function addSource() {
   openModal({

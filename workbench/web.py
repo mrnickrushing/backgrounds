@@ -23,6 +23,8 @@ from .core import (
     DOCUMENT_STATUSES,
     DIMENSIONS,
     DIMENSION_LABELS,
+    INTERVIEW_PLAN_STATUSES,
+    INTERVIEW_PLAN_STATUS_LABELS,
     build_inquiries_from_templates,
     daily_queue,
     inquiry_template_preview,
@@ -145,6 +147,12 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if path == "/api/templates":
                 return self.send_json({
                     "inquiries": [dict(template) for template in template_lookup().values()],
+                    "interview_plans": [
+                        {"id": "pre_investigatory", "label": "Pre-Investigatory Interview packet"},
+                        {"id": "discrepancy", "label": "Discrepancy clarification packet"},
+                        {"id": "reference", "label": "Reference verification packet"},
+                        {"id": "employer", "label": "Employment verification packet"},
+                    ],
                     "interviews": ["Pre-Investigatory Interview", "Employment verification", "Reference interview", "Discrepancy clarification"],
                     "timeline": ["Employment history", "Residence history", "Education history", "Military history"],
                     "documents": ["Release form", "Employment verification", "Education records", "Court document"],
@@ -161,6 +169,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     "case_statuses": CASE_STATUSES,
                     "timeline_categories": {key: key.replace("_", " ").title() for key in TIMELINE_CATEGORIES},
                     "document_statuses": {key: key.replace("_", " ").title() for key in DOCUMENT_STATUSES},
+                    "interview_plan_statuses": INTERVIEW_PLAN_STATUS_LABELS,
                 })
             if path == "/api/cases":
                 query = parse_qs(urlparse(self.path).query)
@@ -408,6 +417,29 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     raise WorkbenchError("label, kind, and locator are required")
                 data["sources"].append(item)
                 append_activity(data, "source_added", item["id"])
+            elif resource == "interview-plans":
+                if body.get("source_ids", []) and not isinstance(body.get("source_ids"), list):
+                    raise WorkbenchError("source identifiers must be a list")
+                if body.get("discrepancy_ids", []) and not isinstance(body.get("discrepancy_ids"), list):
+                    raise WorkbenchError("discrepancy identifiers must be a list")
+                item = {
+                    "id": next_id(data["interview_plans"], "PLN"),
+                    "subject": body.get("subject", ""),
+                    "question": body.get("question", ""),
+                    "status": body.get("status", "planned"),
+                    "notes": body.get("notes", ""),
+                    "source_ids": body.get("source_ids", []),
+                    "discrepancy_ids": body.get("discrepancy_ids", []),
+                    "recording_locator": body.get("recording_locator", ""),
+                    "created_at": utc_now(),
+                    "updated_at": "",
+                }
+                if item["status"] not in INTERVIEW_PLAN_STATUSES:
+                    raise WorkbenchError("invalid interview plan status")
+                if not all((item["subject"], item["question"])):
+                    raise WorkbenchError("subject and question are required")
+                data["interview_plans"].append(item)
+                append_activity(data, "interview_plan_added", item["id"])
             else:
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
             self.store.save_case(data, self.current_user(), f"{resource.rstrip('s')}_added", detail=item["id"])
@@ -477,6 +509,32 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 if item["status"] == "sent" and not item["sent_at"]:
                     item["sent_at"] = utc_now()
                 append_activity(data, "inquiry_updated", item["id"])
+            elif len(parts) == 4 and parts[2] == "interview-plans":
+                item = self.find_item(data["interview_plans"], parts[3])
+                if "subject" in body:
+                    item["subject"] = body["subject"]
+                if "question" in body:
+                    item["question"] = body["question"]
+                if "status" in body:
+                    if body["status"] not in INTERVIEW_PLAN_STATUSES:
+                        raise WorkbenchError("invalid interview plan status")
+                    item["status"] = body["status"]
+                if "notes" in body:
+                    item["notes"] = body["notes"]
+                if "recording_locator" in body:
+                    item["recording_locator"] = body["recording_locator"]
+                if "source_ids" in body:
+                    if not isinstance(body["source_ids"], list):
+                        raise WorkbenchError("source identifiers must be a list")
+                    item["source_ids"] = body["source_ids"]
+                if "discrepancy_ids" in body:
+                    if not isinstance(body["discrepancy_ids"], list):
+                        raise WorkbenchError("discrepancy identifiers must be a list")
+                    item["discrepancy_ids"] = body["discrepancy_ids"]
+                if not all((item.get("subject", ""), item.get("question", ""))):
+                    raise WorkbenchError("subject and question are required")
+                item["updated_at"] = utc_now()
+                append_activity(data, "interview_plan_updated", item["id"])
             elif len(parts) == 4 and parts[2] == "discrepancies":
                 item = self.find_item(data["discrepancies"], parts[3])
                 for key in ("status", "candidate_response", "corroboration", "resolution"):
