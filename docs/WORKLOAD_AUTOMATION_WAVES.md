@@ -2,6 +2,12 @@
 
 Purpose: reduce administrative load in CDCR background-investigation work without replacing eSOPH, agency policy, investigator judgment, or approved systems. All examples and tests use fictional, non-PII data.
 
+Status as of 2026-08-26: Waves 1 through 5 are implemented, browser-checked, and merged to `main`.
+
+- Wave 1 / 2 / 3 merged in PR #12, merge commit `588dc00`
+- Wave 4 merged in PR #13, merge commit `0a638ef`
+- Wave 5 merged in PR #14, merge commit `810b109`
+
 ## Wave 1 — Life history and documents
 
 - A chronological employment, residence, education, military, relationship, and legal-event timeline.
@@ -37,3 +43,8 @@ Purpose: reduce administrative load in CDCR background-investigation work withou
 
 - Exact CDCR report template mapping begins only after the approved form is supplied.
 - eSOPH, agency records, identity, email, and document-system integrations remain disabled pending written authorization, interfaces, and credentials.
+
+## Remaining follow-on work
+
+- Final report-template alignment once the approved CDCR form is uploaded.
+- Any integration work that touches live systems remains gated on written authorization and a supported interface.
