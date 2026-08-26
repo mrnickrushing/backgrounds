@@ -33,6 +33,7 @@ from .core import (
     WorkbenchError,
     append_activity,
     audit_case,
+    command_center,
     normalize_case,
     new_case,
     next_id,
@@ -158,10 +159,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     "documents": ["Release form", "Employment verification", "Education records", "Court document"],
                 })
             if path == "/api/queue":
-                return self.send_json({
-                    "generated_at": utc_now(),
-                    "items": daily_queue(self.store.list_cases()),
-                })
+                me = self.current_user()
+                return self.send_json(command_center(self.store.list_cases(), me.get("role", "investigator")))
             if path == "/api/meta":
                 return self.send_json({
                     "areas": AREA_LABELS,

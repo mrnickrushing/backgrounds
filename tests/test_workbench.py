@@ -1,8 +1,9 @@
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
-from workbench.core import AREAS, DIMENSIONS, WorkbenchError, audit_case, build_inquiries_from_templates, daily_queue, discrepancy_matrix, inquiry_template_preview, interview_plan_findings, load_case, new_case, phs_findings, render_report, save_case, source_trace_map, timeline_findings, validate_case_package
+from workbench.core import AREAS, DIMENSIONS, WorkbenchError, audit_case, build_inquiries_from_templates, command_center, daily_queue, discrepancy_matrix, inquiry_template_preview, interview_plan_findings, load_case, new_case, phs_findings, render_report, save_case, source_trace_map, timeline_findings, validate_case_package
 from workbench.security import hash_password, totp_code, verify_password, verify_totp
 from workbench.store import WorkbenchStore
 from workbench.web import case_summary, create_session, valid_session
@@ -140,6 +141,25 @@ class WorkbenchTests(unittest.TestCase):
         self.assertIn("missing_release", kinds)
         self.assertIn("overdue_follow_up", kinds)
         self.assertIn("supervisor_return", kinds)
+
+    def test_command_center_groups_work_by_time_and_role(self):
+        today = date.today().isoformat()
+        this_week = (date.today() + timedelta(days=3)).isoformat()
+        center = command_center([
+            {
+                "case_id": "CENTER-1",
+                "target_date": today,
+                "review": {"status": "pending"},
+                "inquiries": [
+                    {"id": "INQ-1", "source_label": "Employer", "status": "sent", "follow_up_due": this_week, "release_required": True, "release_attached": False},
+                ],
+            }
+        ], role="supervisor")
+        self.assertEqual(center["role"], "supervisor")
+        self.assertTrue(center["today"])
+        self.assertTrue(center["this_week"])
+        self.assertTrue(center["risk"])
+        self.assertEqual(center["role_card"]["title"], "Supervisor view")
 
     def test_interview_plan_findings_and_source_trace_map(self):
         findings = interview_plan_findings([

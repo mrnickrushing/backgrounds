@@ -650,6 +650,95 @@ def daily_queue(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
+def _parse_date(value: Any) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def command_center(cases: list[dict[str, Any]], role: str = "investigator") -> dict[str, Any]:
+    today = date.today()
+    today_items: list[dict[str, Any]] = []
+    week_items: list[dict[str, Any]] = []
+    risk_items: list[dict[str, Any]] = []
+    base_queue = daily_queue(cases)
+    for item in base_queue:
+        due = _parse_date(item.get("due_date"))
+        if due and due <= today:
+            today_items.append(item)
+        if due and 0 <= (due - today).days <= 7:
+            week_items.append(item)
+        if item["kind"] in {"missing_release", "overdue_follow_up", "pending_source_response", "supervisor_return"}:
+            risk_items.append(item)
+    for case in cases:
+        target = _parse_date(case.get("target_date"))
+        if target and 0 <= (target - today).days <= 7:
+            week_items.append({
+                "kind": "target_date_due_soon",
+                "priority": "normal" if (target - today).days else "high",
+                "case_id": case["case_id"],
+                "record_id": case["case_id"],
+                "title": case["case_id"],
+                "detail": "Target date is within the next week.",
+                "due_date": target.isoformat(),
+                "status": case.get("status", ""),
+            })
+        if target and target <= today:
+            today_items.append({
+                "kind": "target_date_due",
+                "priority": "high",
+                "case_id": case["case_id"],
+                "record_id": case["case_id"],
+                "title": case["case_id"],
+                "detail": "Target date is due or past due.",
+                "due_date": target.isoformat(),
+                "status": case.get("status", ""),
+            })
+        if case.get("review", {}).get("status") == "pending" and role in {"supervisor", "admin"}:
+            risk_items.append({
+                "kind": "review_pending",
+                "priority": "high",
+                "case_id": case["case_id"],
+                "record_id": case["case_id"],
+                "title": case["case_id"],
+                "detail": "Case is awaiting supervisor action.",
+                "due_date": case.get("target_date", ""),
+                "status": case.get("review", {}).get("status", ""),
+            })
+    def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[tuple[str, str]] = set()
+        result: list[dict[str, Any]] = []
+        for item in items:
+            key = (item["kind"], item["case_id"] + ":" + item["record_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        result.sort(key=lambda item: (0 if item["priority"] == "high" else 1, item["due_date"] or "9999-12-31", item["case_id"], item["record_id"]))
+        return result
+    today_items = _dedupe(today_items)
+    week_items = _dedupe(week_items)
+    risk_items = _dedupe(risk_items)
+    view = "supervisor" if role in {"supervisor", "admin"} else "investigator"
+    role_card = {
+        "title": "Supervisor view" if view == "supervisor" else "Investigator view",
+        "detail": "Review pending work, returns, and case readiness." if view == "supervisor" else "Focus on overdue follow-ups, releases, and source responses.",
+        "focus": ["review_pending", "supervisor_return"] if view == "supervisor" else ["missing_release", "overdue_follow_up", "pending_source_response"],
+    }
+    return {
+        "generated_at": utc_now(),
+        "role": view,
+        "role_card": role_card,
+        "items": base_queue,
+        "today": today_items,
+        "this_week": week_items,
+        "risk": risk_items,
+    }
+
+
 def timeline_findings(events: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Return neutral review prompts for dated life-history entries, never conclusions."""
     grouped: dict[str, list[dict[str, Any]]] = {category: [] for category in TIMELINE_CATEGORIES}
