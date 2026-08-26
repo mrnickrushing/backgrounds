@@ -87,6 +87,14 @@ DOCUMENT_STATUS_LABELS = {
     "returned": "Returned",
     "not_applicable": "Not applicable",
 }
+INTERVIEW_PLAN_STATUSES = ("planned", "scheduled", "completed", "canceled", "held")
+INTERVIEW_PLAN_STATUS_LABELS = {
+    "planned": "Planned",
+    "scheduled": "Scheduled",
+    "completed": "Completed",
+    "canceled": "Canceled",
+    "held": "Held",
+}
 INQUIRY_TEMPLATES = (
     {
         "id": "employment_verification",
@@ -380,8 +388,13 @@ def normalize_case(data: dict[str, Any]) -> dict[str, Any]:
             "id": item.get("id", "") or next_id(interview_plans, "PLN"),
             "subject": str(item.get("subject", "")).strip(),
             "question": str(item.get("question", "")).strip(),
-            "status": str(item.get("status", "planned")),
+            "status": str(item.get("status", "planned")) if item.get("status", "planned") in INTERVIEW_PLAN_STATUSES else "planned",
             "notes": str(item.get("notes", "")),
+            "source_ids": _string_list(item.get("source_ids", [])),
+            "discrepancy_ids": _string_list(item.get("discrepancy_ids", [])),
+            "recording_locator": str(item.get("recording_locator", "")),
+            "created_at": str(item.get("created_at", "")),
+            "updated_at": str(item.get("updated_at", "")),
         }
         interview_plans.append(interview_plan)
     normalized["interview_plans"] = interview_plans
@@ -486,6 +499,84 @@ def build_inquiries_from_templates(case_data: dict[str, Any], template_ids: list
         }
         selected.append(inquiry)
     return selected
+
+
+def source_trace_map(data: dict[str, Any]) -> dict[str, Any]:
+    sources: dict[str, dict[str, Any]] = {}
+    orphans: set[str] = set()
+
+    def register(source_ids: Any, reference: str) -> None:
+        for source_id in _string_list(source_ids):
+            if source_id in sources:
+                sources[source_id]["references"].append(reference)
+            else:
+                orphans.add(source_id)
+
+    for item in data.get("sources", []):
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("id", "")).strip()
+        if not source_id:
+            continue
+        sources[source_id] = {
+            "source_id": source_id,
+            "label": str(item.get("label", "")).strip() or source_id,
+            "kind": str(item.get("kind", "")).strip(),
+            "location": str(item.get("location", "")).strip(),
+            "references": [],
+        }
+
+    for key, section in data.get("dimensions", {}).items():
+        if isinstance(section, dict):
+            register(section.get("source_ids", []), f"POST dimension: {DIMENSION_LABELS.get(key, key)}")
+    for key, section in data.get("areas", {}).items():
+        if isinstance(section, dict):
+            register(section.get("source_ids", []), f"Area narrative: {AREA_LABELS.get(key, key)}")
+
+    register(data.get("bias_relevant_findings", {}).get("source_ids", []), "Bias-relevant findings")
+
+    for item in data.get("inquiries", []):
+        if isinstance(item, dict):
+            register(item.get("source_ids", []), f"Inquiry: {str(item.get('source_label', 'Inquiry')).strip() or 'Inquiry'}")
+    for item in data.get("interviews", []):
+        if isinstance(item, dict):
+            register(item.get("source_ids", []), f"Interview: {str(item.get('kind', 'interview')).replace('_', ' ').title()}")
+    for item in data.get("discrepancies", []):
+        if isinstance(item, dict):
+            register(item.get("source_ids", []), f"Discrepancy: {str(item.get('title', 'Discrepancy')).strip() or 'Discrepancy'}")
+    for item in data.get("timeline", []):
+        if isinstance(item, dict):
+            register(item.get("source_ids", []), f"Timeline: {str(item.get('label', 'Timeline entry')).strip() or 'Timeline entry'}")
+    for item in data.get("phs_changes", []):
+        if isinstance(item, dict):
+            register(item.get("source_ids", []), f"PHS change: {str(item.get('field_label', 'PHS field')).strip() or 'PHS field'}")
+    for item in data.get("interview_plans", []):
+        if isinstance(item, dict):
+            register(item.get("source_ids", []), f"Interview plan: {str(item.get('subject', 'Interview plan')).strip() or 'Interview plan'}")
+
+    for entry in sources.values():
+        entry["references"] = sorted(set(entry["references"]))
+    return {
+        "sources": sorted(sources.values(), key=lambda item: item["source_id"]),
+        "orphan_source_ids": sorted(orphans),
+    }
+
+
+def interview_plan_findings(plans: list[dict[str, Any]]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for item in plans:
+        if not isinstance(item, dict):
+            continue
+        plan_id = item.get("id", "PLN")
+        if not str(item.get("subject", "")).strip():
+            findings.append({"kind": "missing_subject", "message": f"Review {plan_id}; interview subject is missing."})
+        if not str(item.get("question", "")).strip():
+            findings.append({"kind": "missing_question", "message": f"Review {plan_id}; interview question is missing."})
+        if not _string_list(item.get("source_ids", [])):
+            findings.append({"kind": "missing_source", "message": f"Review {plan_id}; add source identifiers linked to the planned interview."})
+        if not str(item.get("recording_locator", "")).strip():
+            findings.append({"kind": "missing_locator", "message": f"Review {plan_id}; add an approved recording locator or note that none exists."})
+    return findings
 
 
 def daily_queue(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -649,6 +740,7 @@ def audit_case(data: dict[str, Any]) -> dict[str, Any]:
         if item["status"] == "resolved" and not item.get("resolution"):
             errors.append(f"{item['id']}: resolved discrepancy has no resolution")
 
+    trace = source_trace_map(data)
     timeline_prompts = timeline_findings(data["timeline"])
     document_prompts = []
     for item in data["documents"]:
@@ -657,6 +749,10 @@ def audit_case(data: dict[str, Any]) -> dict[str, Any]:
         if item.get("status") == "returned":
             document_prompts.append({"kind": "document", "message": f"Review returned document {item.get('id', 'document')} for {item.get('title', 'document')}.", "category": item.get("status", "returned")})
     phs_prompts = phs_findings(data["phs_changes"])
+    plan_prompts = interview_plan_findings(data["interview_plans"])
+
+    if trace["orphan_source_ids"]:
+        errors.append(f"unregistered source identifiers referenced: {', '.join(trace['orphan_source_ids'])}")
 
     missing_areas = [AREA_LABELS[key] for key in AREAS if data["areas"][key]["status"] not in {"complete", "not_applicable"}]
     empty_dimensions = [DIMENSION_LABELS[key] for key in DIMENSIONS if not data["dimensions"][key]["narrative"].strip()]
@@ -671,6 +767,8 @@ def audit_case(data: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"unresolved discrepancies remain: {', '.join(open_discrepancies)}")
         if not any(item["kind"] == "pre_investigatory" for item in data["interviews"]):
             errors.append("no Pre-Investigatory Interview is documented")
+        if plan_prompts:
+            errors.extend(item["message"] for item in plan_prompts)
 
     complete_areas = sum(1 for key in AREAS if data["areas"][key]["status"] in {"complete", "not_applicable"})
     written_dimensions = sum(1 for key in DIMENSIONS if data["dimensions"][key]["narrative"].strip())
@@ -678,6 +776,7 @@ def audit_case(data: dict[str, Any]) -> dict[str, Any]:
         {"key": "case_opened", "label": "Confirm assignment and target date", "complete": bool(data.get("investigator") and data.get("target_date"))},
         {"key": "pre_interview", "label": "Document the Pre-Investigatory Interview", "complete": any(item["kind"] == "pre_investigatory" for item in data["interviews"])},
         {"key": "sources", "label": "Register approved-system source locators", "complete": bool(data["sources"])},
+        {"key": "traceability", "label": "Link source identifiers through the trace map", "complete": not trace["orphan_source_ids"], "detail": f"{len(trace['orphan_source_ids'])} unregistered references" if trace["orphan_source_ids"] else f"{len(trace['sources'])} sources mapped"},
         {"key": "coverage", "label": "Complete the twelve required investigation areas", "complete": complete_areas == len(AREAS), "detail": f"{complete_areas} of {len(AREAS)} complete"},
         {"key": "narrative", "label": "Write POST dimensions and bias-relevant findings", "complete": written_dimensions == len(DIMENSIONS) and bool(data["bias_relevant_findings"]["narrative"].strip()), "detail": f"{written_dimensions} of {len(DIMENSIONS)} dimensions drafted"},
         {"key": "resolve", "label": "Resolve inquiries and discrepancies", "complete": not open_inquiries and not open_discrepancies, "detail": f"{len(open_inquiries)} inquiries · {len(open_discrepancies)} discrepancies open"},
@@ -690,6 +789,8 @@ def audit_case(data: dict[str, Any]) -> dict[str, Any]:
         "timeline_findings": timeline_prompts,
         "document_findings": document_prompts,
         "phs_findings": phs_prompts,
+        "interview_plan_findings": plan_prompts,
+        "source_trace_map": trace,
         "metrics": {
             "areas_complete": complete_areas,
             "areas_total": len(AREAS),
@@ -700,6 +801,7 @@ def audit_case(data: dict[str, Any]) -> dict[str, Any]:
             "timeline_items": len(data["timeline"]),
             "documents": len(data["documents"]),
             "phs_changes": len(data["phs_changes"]),
+            "interview_plans": len(data["interview_plans"]),
         },
         "checklist": checklist,
     }
@@ -760,6 +862,34 @@ def render_report(data: dict[str, Any]) -> str:
                 f"  {_source_line(item.get('source_ids', []))}",
             ])
             lines.append("")
+    lines.extend(["## Interview Planning Packets", ""])
+    if not data["interview_plans"]:
+        lines.append("No interview planning packets recorded.")
+    else:
+        for item in data["interview_plans"]:
+            lines.extend([
+                f"- {item.get('id', 'PLN')}: {item.get('subject', 'Interview plan')} ({item.get('status', 'planned')})",
+                f"  Question: {item.get('question', '[Not entered]')}",
+                f"  Locator: {item.get('recording_locator', '') or '[Not entered]'}",
+                f"  {_source_line(item.get('source_ids', []))}",
+                f"  Discrepancies: {', '.join(item.get('discrepancy_ids', [])) or '[None linked]'}",
+            ])
+            lines.append("")
+    trace = source_trace_map(data)
+    lines.extend(["## Source Trace Map", ""])
+    if not trace["sources"]:
+        lines.append("No registered sources recorded.")
+    else:
+        for item in trace["sources"]:
+            lines.extend([
+                f"- {item['source_id']}: {item['label']}",
+                f"  Kind: {item['kind'] or '[Not entered]'}",
+                f"  Location: {item['location'] or '[Not entered]'}",
+                f"  References: {', '.join(item['references']) or '[None linked]'}",
+            ])
+            lines.append("")
+    if trace["orphan_source_ids"]:
+        lines.extend(["Unregistered source identifiers referenced:", ", ".join(trace["orphan_source_ids"]), ""])
     lines.extend(["## Discrepancy Matrix", ""])
     if not data["discrepancies"]:
         lines.append("No discrepancies recorded.")
