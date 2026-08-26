@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .core import WorkbenchError, cases_root, utc_now, validate_case_id
+from .core import WorkbenchError, cases_root, normalize_case, utc_now, validate_case_id
 from .security import hash_password, new_token, token_digest, verify_password
 
 
@@ -185,7 +185,7 @@ class WorkbenchStore:
     def list_cases(self, include_archived=False):
         query = "SELECT payload FROM cases" + ("" if include_archived else " WHERE archived_at IS NULL") + " ORDER BY updated_at DESC"
         with self.connect() as db:
-            return [json.loads(row["payload"]) for row in db.execute(query)]
+            return [normalize_case(json.loads(row["payload"])) for row in db.execute(query)]
 
     def load_case(self, case_id: str):
         validate_case_id(case_id)
@@ -193,7 +193,7 @@ class WorkbenchStore:
             row = db.execute("SELECT payload,version,assigned_user_id,supervisor_user_id,archived_at,retention_date FROM cases WHERE case_id=?", (case_id,)).fetchone()
         if not row:
             raise WorkbenchError(f"case not found: {case_id}")
-        data = json.loads(row["payload"])
+        data = normalize_case(json.loads(row["payload"]))
         data["record_meta"] = {key: row[key] for key in ("version", "assigned_user_id", "supervisor_user_id", "archived_at", "retention_date")}
         return data
 
@@ -275,6 +275,7 @@ class WorkbenchStore:
         return item, content
 
     def save_case(self, data, actor=None, action="case_updated", expected_version=None, detail=""):
+        data = normalize_case(data)
         case_id = validate_case_id(data["case_id"])
         now = utc_now()
         data["updated_at"] = now

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from workbench.core import AREAS, DIMENSIONS, WorkbenchError, audit_case, load_case, new_case, render_report, save_case, validate_case_package
+from workbench.core import AREAS, DIMENSIONS, WorkbenchError, audit_case, build_inquiries_from_templates, daily_queue, discrepancy_matrix, inquiry_template_preview, load_case, new_case, phs_findings, render_report, save_case, timeline_findings, validate_case_package
 from workbench.security import hash_password, totp_code, verify_password, verify_totp
 from workbench.store import WorkbenchStore
 from workbench.web import case_summary, create_session, valid_session
@@ -87,6 +87,74 @@ class WorkbenchTests(unittest.TestCase):
         data = new_case("CASE-1")
         self.assertEqual(tuple(data["areas"]), AREAS)
         self.assertEqual(tuple(data["dimensions"]), DIMENSIONS)
+        self.assertEqual(data["timeline"], [])
+        self.assertEqual(data["documents"], [])
+
+    def test_timeline_findings_are_neutral_review_prompts(self):
+        findings = timeline_findings([
+            {"category": "employment", "label": "Employer A", "start_date": "2025-01-01", "end_date": "2025-03-01"},
+            {"category": "residence", "label": "Apartment A", "start_date": "2025-01-15", "end_date": "2025-02-15"},
+            {"category": "employment", "label": "Employer B", "start_date": "2025-04-01", "end_date": ""},
+        ])
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["kind"], "gap")
+        self.assertIn("employment", findings[0]["message"].lower())
+
+    def test_phs_findings_flag_missing_supporting_details(self):
+        findings = phs_findings([
+            {"id": "PHS-0001", "field_label": "Employment", "prior_value": "Employer A", "current_value": "Employer B", "reported_at": "", "source_ids": [], "disposition": ""},
+        ])
+        self.assertTrue(any(item["kind"] == "missing_date" for item in findings))
+        self.assertTrue(any(item["kind"] == "missing_source" for item in findings))
+        self.assertTrue(any(item["kind"] == "missing_disposition" for item in findings))
+
+    def test_discrepancy_matrix_preserves_response_columns(self):
+        matrix = discrepancy_matrix([
+            {"id": "DSC-1", "title": "Job dates", "area": "employment_history", "candidate_statement": "Worked 2020-2021", "contrary_information": "Employer says 2020 only", "candidate_response": "Explained mismatch", "corroboration": "HR note", "resolution": "Clarified", "status": "resolved"},
+        ])
+        self.assertEqual(matrix[0]["candidate_response"], "Explained mismatch")
+        self.assertEqual(matrix[0]["resolution"], "Clarified")
+
+    def test_inquiry_templates_preview_and_batch_creation(self):
+        preview = inquiry_template_preview(["employment_verification", "education_verification"], "2026-09-01")
+        self.assertEqual([item["template_id"] for item in preview], ["employment_verification", "education_verification"])
+        self.assertTrue(all(item["follow_up_due"] == "2026-09-01" for item in preview))
+        data = new_case("CASE-TEMPLATES")
+        created = build_inquiries_from_templates(data, ["employment_verification", "education_verification"], "2026-09-01")
+        self.assertEqual(len(created), 2)
+        data["inquiries"].extend(created)
+        duplicate = build_inquiries_from_templates(data, ["employment_verification"], "2026-09-01")
+        self.assertEqual(duplicate, [])
+
+    def test_daily_queue_flags_due_and_release_work(self):
+        queue = daily_queue([
+            {
+                "case_id": "QUEUE-1",
+                "inquiries": [
+                    {"id": "INQ-1", "source_label": "Employer", "status": "sent", "follow_up_due": "2026-08-20", "release_required": True, "release_attached": False},
+                ],
+                "review": {"status": "corrections_requested"},
+            }
+        ])
+        kinds = {item["kind"] for item in queue}
+        self.assertIn("missing_release", kinds)
+        self.assertIn("overdue_follow_up", kinds)
+        self.assertIn("supervisor_return", kinds)
+
+    def test_legacy_case_is_normalized_on_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case_dir = root / "LEGACY-1"
+            case_dir.mkdir()
+            (case_dir / "workbench.json").write_text(
+                '{"case_id":"LEGACY-1","areas":{},"dimensions":{},"bias_relevant_findings":{},"inquiries":[],"discrepancies":[],"interviews":[],"sources":[],"review":{}}',
+                encoding="utf-8",
+            )
+            data = load_case("LEGACY-1", root)
+            self.assertEqual(data["timeline"], [])
+            self.assertEqual(data["documents"], [])
+            self.assertEqual(data["phs_changes"], [])
+            self.assertEqual(data["interview_plans"], [])
 
     def test_closed_case_requires_complete_work(self):
         data = new_case("CASE-2")

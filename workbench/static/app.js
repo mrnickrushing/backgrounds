@@ -1,6 +1,8 @@
 const state = {
   meta: null,
+  templates: null,
   cases: [],
+  queue: null,
   current: null,
   tab: "overview",
   reportSection: null,
@@ -22,11 +24,16 @@ const label = (s) =>
     .replace(/\b\w/g, (c) => c.toUpperCase());
 const fmtDate = (s) =>
   s
-    ? new Intl.DateTimeFormat(undefined, {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      }).format(new Date(`${s}T12:00:00`))
+    ? (() => {
+        const value = new Date(`${s}T12:00:00`);
+        return Number.isNaN(value.getTime())
+          ? "Invalid date"
+          : new Intl.DateTimeFormat(undefined, {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            }).format(value);
+      })()
     : "Not set";
 const request = async (path, options = {}) => {
   const res = await fetch(path, {
@@ -115,14 +122,19 @@ function setChrome(name, routeName) {
 async function loadMeta() {
   if (!state.meta) state.meta = await request("/api/meta");
 }
+async function loadTemplates() {
+  if (!state.templates) state.templates = await request("/api/templates");
+}
 async function dashboard() {
   setChrome("Caseload", "dashboard");
-  state.cases = await request("/api/cases");
+  const [cases, queue] = await Promise.all([request("/api/cases"), request("/api/queue")]);
+  state.cases = cases;
+  state.queue = queue;
   const total = state.cases.length,
     open = state.cases.filter((x) => x.status !== "closed").length,
     inq = state.cases.reduce((n, x) => n + x.open_inquiries, 0),
     overdue = state.cases.reduce((n, x) => n + x.overdue_follow_ups, 0);
-  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Operational overview</p><h1>Active caseload</h1><p>Track required work, follow-ups, and supervisory review.</p></div><button class="secondary" data-action="refresh">Refresh</button></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Awaiting action or response</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Require immediate attention</div></div><div class="stat"><div class="stat-label">Pending review</div><div class="stat-value">${state.cases.filter((x) => x.review_status === "pending").length}</div><div class="stat-detail">Awaiting supervisor action</div></div></div><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p>Search and filter the operational caseload.</p></div><div class="filter-row"><input class="filter" id="caseSearch" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}">${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all">All due states</option><option value="overdue">Overdue only</option></select></div></div><div id="caseTable">${caseTable(state.cases)}</div></section>`;
+  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Operational overview</p><h1>Active caseload</h1><p>Track required work, follow-ups, and supervisory review.</p></div><button class="secondary" data-action="refresh">Refresh</button></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Awaiting action or response</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Require immediate attention</div></div><div class="stat"><div class="stat-label">Pending review</div><div class="stat-value">${state.cases.filter((x) => x.review_status === "pending").length}</div><div class="stat-detail">Awaiting supervisor action</div></div></div><section class="panel"><div class="panel-head"><div><h2>Daily queue</h2><p>Items that need action now.</p></div><span class="subtle">${state.queue.items.length} queued</span></div><div class="record-list">${state.queue.items.slice(0, 8).map((item) => `<div class="record"><div><h4>${esc(item.case_id)} · ${esc(item.title)}</h4><p>${esc(item.detail)}${item.due_date ? ` · Due ${fmtDate(item.due_date)}` : ""}</p></div><div class="record-actions">${status(item.priority)}<span class="subtle">${esc(item.kind)}</span></div></div>`).join("") || '<div class="empty"><strong>No queue items</strong>Nothing is currently overdue or pending follow-up.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p>Search and filter the operational caseload.</p></div><div class="filter-row"><input class="filter" id="caseSearch" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}">${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all">All due states</option><option value="overdue">Overdue only</option></select></div></div><div id="caseTable">${caseTable(state.cases)}</div></section>`;
   const apply = () => {
     const q = document.querySelector("#caseSearch").value.toLowerCase(),
       stage = document.querySelector("#caseFilter").value,
@@ -148,7 +160,7 @@ async function dashboard() {
 function caseTable(cases) {
   if (!cases.length)
     return `<div class="empty"><strong>No matching cases</strong>Adjust the queue filters or create a new case.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Case</th><th>Stage / review</th><th>Completion</th><th>Open work</th><th>Target</th><th>Priority</th></tr></thead><tbody>${cases.map((c) => `<tr data-case="${esc(c.case_id)}"><td><span class="case-id">${esc(c.case_id)}</span><span class="subtle">${esc(c.investigator || "Unassigned")} ${(c.tags || []).map((x) => "· " + esc(x)).join(" ")}</span></td><td>${status(c.status)}<span class="subtle">${esc(label(c.review_status))}</span></td><td>${progress(c.areas_complete, c.areas_total)}</td><td>${c.open_inquiries} inquiries<span class="subtle">${c.overdue_follow_ups} overdue · ${c.open_discrepancies} discrepancies</span></td><td>${fmtDate(c.target_date)}</td><td>${status(c.priority)}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Case</th><th>Stage / review</th><th>Completion</th><th>Open work</th><th>Target</th><th>Priority</th></tr></thead><tbody>${cases.map((c) => `<tr data-case="${esc(c.case_id)}"><td><span class="case-id">${esc(c.case_id)}</span><span class="subtle">${esc(c.investigator || "Unassigned")} ${(c.tags || []).map((x) => "· " + esc(x)).join(" ")}</span></td><td>${status(c.status)}<span class="subtle">${esc(label(c.review_status))}</span></td><td>${progress(c.areas_complete, c.areas_total)}</td><td>${c.open_inquiries} inquiries<span class="subtle">${c.overdue_follow_ups} overdue · ${c.open_discrepancies} discrepancies · ${c.open_documents} documents</span></td><td>${fmtDate(c.target_date)}</td><td>${status(c.priority)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function bindCaseRows() {
   document
@@ -161,6 +173,7 @@ function bindCaseRows() {
 }
 async function caseView(id) {
   setChrome(id, "dashboard");
+  await loadTemplates();
   state.current = await request(`/api/cases/${encodeURIComponent(id)}`);
   const c = state.current,
     a = c.audit.metrics,
@@ -171,6 +184,9 @@ async function caseView(id) {
     ["discrepancies", "Discrepancies"],
     ["interviews", "Interviews"],
     ["sources", "Sources"],
+    ["phs", "PHS"],
+    ["timeline", "Timeline"],
+    ["documents", "Documents"],
     ["attachments", "Files"],
     ["review", "Review"],
     ["report", "Report workspace"],
@@ -221,7 +237,7 @@ function renderTab() {
       )
       .join("")}</div>`;
   else if (state.tab === "inquiries")
-    node.innerHTML = records(
+    node.innerHTML = templateBatchWorkspace(c) + records(
       "Inquiries",
       "Track every request, response, and follow-up.",
       c.inquiries,
@@ -230,14 +246,7 @@ function renderTab() {
         `<div class="record"><div><h4>${esc(x.source_label)} <span class="subtle">${esc(x.id)} · ${esc(state.meta.areas[x.area])}</span></h4><p>${esc(label(x.source_type))} · Follow-up ${fmtDate(x.follow_up_due)}${x.response_summary ? `<br>${esc(x.response_summary)}` : ""}</p></div><div class="record-actions">${status(x.status)}<button class="quiet" data-edit-inquiry="${x.id}">Update</button></div></div>`,
     );
   else if (state.tab === "discrepancies")
-    node.innerHTML = records(
-      "Discrepancies",
-      "Keep both accounts, corroboration, and disposition separate.",
-      c.discrepancies,
-      "add-discrepancy",
-      (x) =>
-        `<div class="record"><div><h4>${esc(x.title)} <span class="subtle">${esc(x.id)} · ${esc(state.meta.areas[x.area])}</span></h4><p><strong>Candidate:</strong> ${esc(x.candidate_statement)}<br><strong>Contrary:</strong> ${esc(x.contrary_information)}</p></div><div class="record-actions">${status(x.status)}<button class="quiet" data-edit-discrepancy="${x.id}">Update</button></div></div>`,
-    );
+    node.innerHTML = `<div class="section-toolbar"><div><p class="eyebrow">Discrepancy comparer</p><h3>Candidate statement matrix</h3><p>Compare the candidate account, contrary information, response, corroboration, and resolution in one view.</p></div><button class="secondary" data-action="add-discrepancy">Add</button></div>${discrepancyMatrix(c.discrepancies)}<div class="section-toolbar"><div><h3>Discrepancy log</h3><span class="subtle">Keep the full evidentiary trail attached to each conflict.</span></div></div><div class="cards">${c.discrepancies.map((x) => `<div class="record"><div><h4>${esc(x.title)} <span class="subtle">${esc(x.id)} · ${esc(state.meta.areas[x.area])}</span></h4><p><strong>Candidate:</strong> ${esc(x.candidate_statement)}<br><strong>Contrary:</strong> ${esc(x.contrary_information)}</p></div><div class="record-actions">${status(x.status)}<button class="quiet" data-edit-discrepancy="${x.id}">Update</button></div></div>`).join("") || '<div class="empty"><strong>No discrepancies recorded</strong>Add the first conflict when it appears.</div>'}</div>`;
   else if (state.tab === "interviews")
     node.innerHTML = records(
       "Interviews",
@@ -256,6 +265,33 @@ function renderTab() {
       (x) =>
         `<div class="record"><div><h4>${esc(x.label)} <span class="subtle">${esc(x.id)} · ${esc(label(x.kind))}</span></h4><p>${esc(x.location)}${x.notes ? ` · ${esc(x.notes)}` : ""}</p></div></div>`,
     );
+  else if (state.tab === "phs")
+    node.innerHTML = records(
+      "PHS change ledger",
+      "Track every changed field, what it used to say, and how the change was dispositioned.",
+      c.phs_changes,
+      "add-phs-change",
+      (x) =>
+        `<div class="record"><div><h4>${esc(x.field_label)} <span class="subtle">${esc(x.id)}</span></h4><p><strong>Prior:</strong> ${esc(x.prior_value || "Not entered")}<br><strong>Current:</strong> ${esc(x.current_value || "Not entered")}<br><strong>Reported:</strong> ${esc(x.reported_at || "Not entered")}<br>${esc(x.disposition || "No disposition yet")}</p></div><div class="record-actions">${status(x.disposition ? "recorded" : "pending")}<button class="quiet" data-edit-phs-change="${x.id}">Update</button></div></div>`,
+    );
+  else if (state.tab === "timeline")
+    node.innerHTML = records(
+      "Life history timeline",
+      "Keep employment, residence, education, military, relationship, and legal history in order.",
+      c.timeline,
+      "add-timeline",
+      (x) =>
+        `<div class="record"><div><h4>${esc(x.label)} <span class="subtle">${esc(x.id)} · ${esc(label(x.category))}</span></h4><p>${esc(fmtDate(x.start_date))} - ${esc(x.end_date ? fmtDate(x.end_date) : "Open-ended")}${x.notes ? `<br>${esc(x.notes)}` : ""}<br>${esc((x.source_ids || []).join(" · ")) || "No source identifiers"}</p></div><div class="record-actions"><button class="quiet" data-edit-timeline="${x.id}">Update</button></div></div>`,
+    );
+  else if (state.tab === "documents")
+    node.innerHTML = records(
+      "Document control",
+      "Track requests, receipts, and verification dates without hiding what is still missing.",
+      c.documents,
+      "add-document",
+      (x) =>
+        `<div class="record"><div><h4>${esc(x.title)} <span class="subtle">${esc(x.id)} · ${esc(label(x.status))}</span></h4><p>${x.due_date ? `Due ${fmtDate(x.due_date)} · ` : ""}${x.required_original ? "Original required · " : ""}${x.source_locator ? esc(x.source_locator) : "No locator"}${x.notes ? `<br>${esc(x.notes)}` : ""}${x.received_at ? `<br>Received ${fmtDate(x.received_at)}` : ""}${x.verified_at ? ` · Verified ${fmtDate(x.verified_at)}` : ""}${x.returned_at ? ` · Returned ${fmtDate(x.returned_at)}` : ""}</p></div><div class="record-actions"><button class="quiet" data-edit-document="${x.id}">Update</button></div></div>`,
+    );
   else if (state.tab === "attachments") attachmentsWorkspace();
   else if (state.tab === "review") reviewWorkspace();
   else reportWorkspace();
@@ -270,7 +306,7 @@ function renderChecklist(c) {
     .querySelector("#tabContent")
     ?.insertAdjacentHTML(
       "afterbegin",
-      `<section class="readiness-plan"><div><p class="eyebrow">Guided case plan</p><h3>${incomplete ? `${incomplete} steps still need attention` : "Case is ready for final review"}</h3><p>Use this sequence to keep the file reviewable. It does not replace agency policy or supervisor direction.</p></div><div class="checklist">${items.map((item) => `<div class="check-item ${item.complete ? "complete" : ""}"><span>${item.complete ? "✓" : "○"}</span><div><strong>${esc(item.label)}</strong>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></div>`).join("")}</div></section>`,
+      `<section class="readiness-plan"><div><p class="eyebrow">Guided case plan</p><h3>${incomplete ? `${incomplete} steps still need attention` : "Case is ready for final review"}</h3><p>Use this sequence to keep the file reviewable. It does not replace agency policy or supervisor direction.</p></div><div class="checklist">${items.map((item) => `<div class="check-item ${item.complete ? "complete" : ""}"><span>${item.complete ? "✓" : "○"}</span><div><strong>${esc(item.label)}</strong>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></div>`).join("")}</div></section>${(c.audit.timeline_findings || []).length || (c.audit.document_findings || []).length || (c.audit.phs_findings || []).length ? `<section class="readiness-plan"><div><p class="eyebrow">Review prompts</p><h3>Timeline, PHS, and document follow-up</h3><p>These are neutral prompts for review, not conclusions.</p></div><div class="issues">${(c.audit.timeline_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}${(c.audit.phs_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}${(c.audit.document_findings || []).map((item) => `<div class="issue">${esc(item.message)}</div>`).join("")}</div></section>` : ""}`,
     );
 }
 async function attachmentsWorkspace() {
@@ -350,6 +386,37 @@ function reviewWorkspace() {
 function records(title, subtitle, items, action, render) {
   return `<div class="section-toolbar"><div><h3>${title}</h3><span class="subtle">${subtitle}</span></div><button class="secondary" data-action="${action}">Add</button></div><div class="cards">${items.map(render).join("") || `<div class="empty"><strong>No ${title.toLowerCase()} recorded</strong>Add the first record when work begins.</div>`}</div>`;
 }
+function templateBatchWorkspace(c) {
+  const templates = state.templates?.inquiries || [];
+  const existing = new Set((c.inquiries || []).map((item) => item.template_id).filter(Boolean));
+  return `<section class="readiness-plan"><div><p class="eyebrow">Batch inquiry builder</p><h3>Create standard requests from templates</h3><p>Select the likely requests once, preview the resulting queue, then create them in one step.</p></div><div class="field-row"><label>Follow-up date<input id="batchFollowUp" type="date"></label><button class="primary" data-action="batch-inquiries">Create selected</button></div><div class="template-grid">${templates.map((item) => `<label class="check full ${existing.has(item.id) ? "disabled" : ""}"><input type="checkbox" class="template-select" value="${esc(item.id)}" ${existing.has(item.id) ? "checked disabled" : ""}> <strong>${esc(item.label)}</strong><small>${esc(label(item.area))} · ${esc(item.method)}${item.release_required ? " · release required" : ""}${existing.has(item.id) ? " · already added" : ""}</small></label>`).join("") || '<div class="empty"><strong>No templates available</strong>Load the inquiry template catalog first.</div>'}</div><div class="record-list" id="batchPreview"></div></section>`;
+}
+function refreshBatchPreview() {
+  const node = document.querySelector("#batchPreview");
+  if (!node) return;
+  const templates = state.templates?.inquiries || [];
+  const due = document.querySelector("#batchFollowUp")?.value || "";
+  const selected = [...document.querySelectorAll(".template-select:checked")].map((x) => x.value);
+  const existing = new Set((state.current?.inquiries || []).map((item) => item.template_id).filter(Boolean));
+  const preview = selected.map((id) => templates.find((item) => item.id === id)).filter(Boolean).map((item) => ({
+    ...item,
+    follow_up_due: due || fmtDateISOPlus(item.follow_up_days),
+    skipped: existing.has(item.id),
+  }));
+  node.innerHTML = preview.length
+    ? preview.map((item) => `<div class="record"><div><h4>${esc(item.label)} <span class="subtle">${esc(label(item.area))}</span></h4><p>${esc(item.method)}${item.release_required ? " · release required" : ""}<br>Follow-up ${fmtDate(item.follow_up_due)}</p></div><div class="record-actions">${item.skipped ? status("planned") : status("ready")}</div></div>`).join("")
+    : '<div class="empty"><strong>No templates selected</strong>Choose one or more inquiry templates to preview the batch.</div>';
+}
+function fmtDateISOPlus(days) {
+  const date = new Date();
+  date.setDate(date.getDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10);
+}
+function discrepancyMatrix(items) {
+  if (!items.length)
+    return '<div class="empty"><strong>No discrepancies recorded</strong>Add the first conflict when it appears.</div>';
+  return `<div class="table-wrap"><table><thead><tr><th>Issue</th><th>Candidate</th><th>Contrary</th><th>Response</th><th>Corroboration</th><th>Resolution</th><th>Status</th></tr></thead><tbody>${items.map((item) => `<tr><td><strong>${esc(item.id)}</strong><div class="subtle">${esc(item.title)}<br>${esc(label(item.area))}</div></td><td>${esc(item.candidate_statement || "Not entered")}</td><td>${esc(item.contrary_information || "Not entered")}</td><td>${esc(item.candidate_response || "Not entered")}</td><td>${esc(item.corroboration || "Not entered")}</td><td>${esc(item.resolution || "Not entered")}</td><td>${status(item.status)}</td></tr>`).join("")}</tbody></table></div>`;
+}
 function reportWorkspace() {
   const c = state.current,
     sections = [
@@ -427,6 +494,15 @@ function bindTabActions() {
   document
     .querySelector("[data-action=add-source]")
     ?.addEventListener("click", addSource);
+  document
+    .querySelector("[data-action=add-phs-change]")
+    ?.addEventListener("click", addPhsChange);
+  document
+    .querySelector("[data-action=add-timeline]")
+    ?.addEventListener("click", addTimeline);
+  document
+    .querySelector("[data-action=add-document]")
+    ?.addEventListener("click", addDocument);
   document.querySelectorAll("[data-area]").forEach(
     (x) =>
       (x.onclick = () => {
@@ -443,6 +519,36 @@ function bindTabActions() {
     .forEach(
       (x) => (x.onclick = () => editDiscrepancy(x.dataset.editDiscrepancy)),
     );
+  document
+    .querySelectorAll("[data-edit-phs-change]")
+    .forEach((x) => (x.onclick = () => editPhsChange(x.dataset.editPhsChange)));
+  document
+    .querySelectorAll("[data-edit-timeline]")
+    .forEach((x) => (x.onclick = () => editTimeline(x.dataset.editTimeline)));
+  document
+    .querySelectorAll("[data-edit-document]")
+    .forEach((x) => (x.onclick = () => editDocument(x.dataset.editDocument)));
+  if (state.tab === "inquiries") {
+    document.querySelectorAll(".template-select").forEach((x) => (x.onchange = refreshBatchPreview));
+    const due = document.querySelector("#batchFollowUp");
+    if (due) due.onchange = refreshBatchPreview;
+    document.querySelector("[data-action=batch-inquiries]")?.addEventListener("click", batchCreateInquiries);
+    refreshBatchPreview();
+  }
+}
+async function batchCreateInquiries() {
+  const template_ids = [...document.querySelectorAll(".template-select:checked")].map((x) => x.value);
+  const follow_up_due = document.querySelector("#batchFollowUp")?.value || "";
+  if (!template_ids.length) {
+    toast("Select at least one template");
+    return;
+  }
+  await request(`/api/cases/${encodeURIComponent(state.current.case_id)}/inquiries/batch`, {
+    method: "POST",
+    body: JSON.stringify({ template_ids, follow_up_due }),
+  });
+  state.tab = "inquiries";
+  await caseView(state.current.case_id);
 }
 function addCase() {
   openModal({
@@ -664,6 +770,232 @@ function addSource() {
       await caseView(state.current.case_id);
     },
   });
+}
+function addPhsChange() {
+  openModal({
+    title: "Add PHS change",
+    body:
+      field("field_label", "Field label", "text", {
+        required: true,
+        placeholder: "Employment, address, education, separation reason…",
+      }) +
+      field("prior_value", "Prior value", "textarea", {
+        required: true,
+        full: true,
+        placeholder: "What the PHS said before",
+      }) +
+      field("current_value", "Current value", "textarea", {
+        required: true,
+        full: true,
+        placeholder: "What the PHS says now",
+      }) +
+      field("reported_at", "Reported date", "date") +
+      field("source_ids", "Source identifiers", "text", {
+        full: true,
+        placeholder: "SRC-0001, SRC-0002",
+      }) +
+      field("disposition", "Disposition", "textarea", {
+        full: true,
+        placeholder: "Brief investigator note on the change",
+      }),
+    onSubmit: async (d) => {
+      d.source_ids = d.source_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/phs-changes`,
+        { method: "POST", body: JSON.stringify(d) },
+      );
+      state.tab = "phs";
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function editPhsChange(id) {
+  const item = state.current.phs_changes.find((x) => x.id === id);
+  openModal({
+    title: `Update ${id}`,
+    body:
+      field("field_label", "Field label", "text", {
+        required: true,
+        value: item.field_label,
+      }) +
+      field("prior_value", "Prior value", "textarea", {
+        required: true,
+        full: true,
+        value: item.prior_value,
+      }) +
+      field("current_value", "Current value", "textarea", {
+        required: true,
+        full: true,
+        value: item.current_value,
+      }) +
+      field("reported_at", "Reported date", "date", {
+        value: item.reported_at,
+      }) +
+      field("source_ids", "Source identifiers", "text", {
+        full: true,
+        value: (item.source_ids || []).join(", "),
+      }) +
+      field("disposition", "Disposition", "textarea", {
+        full: true,
+        value: item.disposition,
+      }),
+    onSubmit: async (d) => {
+      d.source_ids = d.source_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/phs-changes/${id}`,
+        { method: "PATCH", body: JSON.stringify(d) },
+      );
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function addTimeline() {
+  openModal({
+    title: "Add timeline entry",
+    body:
+      field("category", "Category", "select", {
+        options: Object.entries(state.meta.timeline_categories).map(([value, label]) => ({
+          value,
+          label,
+        })),
+      }) +
+      field("label", "Entry label", "text", {
+        required: true,
+        placeholder: "Employer, school, residence, event…",
+      }) +
+      field("start_date", "Start date", "date", { required: true }) +
+      field("end_date", "End date", "date") +
+      field("source_ids", "Source identifiers", "text", {
+        full: true,
+        placeholder: "SRC-0001, SRC-0002",
+      }) +
+      field("notes", "Notes", "textarea", { full: true }),
+    onSubmit: async (d) => {
+      d.source_ids = d.source_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/timeline`,
+        { method: "POST", body: JSON.stringify(d) },
+      );
+      state.tab = "timeline";
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function editTimeline(id) {
+  const item = state.current.timeline.find((x) => x.id === id);
+  openModal({
+    title: `Update ${id}`,
+    body:
+      field("category", "Category", "select", {
+        options: Object.entries(state.meta.timeline_categories).map(([value, label]) => ({
+          value,
+          label,
+        })),
+      }) +
+      field("label", "Entry label", "text", {
+        required: true,
+        value: item.label,
+      }) +
+      field("start_date", "Start date", "date", {
+        required: true,
+        value: item.start_date,
+      }) +
+      field("end_date", "End date", "date", { value: item.end_date }) +
+      field("source_ids", "Source identifiers", "text", {
+        full: true,
+        value: (item.source_ids || []).join(", "),
+      }) +
+      field("notes", "Notes", "textarea", { full: true, value: item.notes }),
+    onSubmit: async (d) => {
+      d.source_ids = d.source_ids
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/timeline/${id}`,
+        { method: "PATCH", body: JSON.stringify(d) },
+      );
+      await caseView(state.current.case_id);
+    },
+  });
+  document.querySelector("[name=category]").value = item.category;
+}
+function addDocument() {
+  openModal({
+    title: "Add document record",
+    body:
+      field("title", "Document title", "text", {
+        required: true,
+        placeholder: "Release, transcript, verification letter…",
+      }) +
+      field("status", "Status", "select", {
+        options: Object.entries(state.meta.document_statuses).map(([value, label]) => ({
+          value,
+          label,
+        })),
+      }) +
+      field("due_date", "Due date", "date") +
+      field("source_locator", "Source locator", "text", {
+        full: true,
+        placeholder: "Approved system reference",
+      }) +
+      field("required_original", "Original required", "checkbox") +
+      field("notes", "Notes", "textarea", { full: true }),
+    onSubmit: async (d) => {
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/documents`,
+        { method: "POST", body: JSON.stringify(d) },
+      );
+      state.tab = "documents";
+      await caseView(state.current.case_id);
+    },
+  });
+}
+function editDocument(id) {
+  const item = state.current.documents.find((x) => x.id === id);
+  openModal({
+    title: `Update ${id}`,
+    body:
+      field("title", "Document title", "text", {
+        required: true,
+        value: item.title,
+      }) +
+      field("status", "Status", "select", {
+        options: Object.entries(state.meta.document_statuses).map(([value, label]) => ({
+          value,
+          label,
+        })),
+      }) +
+      field("due_date", "Due date", "date", { value: item.due_date }) +
+      field("received_at", "Received date", "date", { value: item.received_at }) +
+      field("verified_at", "Verified date", "date", { value: item.verified_at }) +
+      field("returned_at", "Returned date", "date", { value: item.returned_at }) +
+      field("source_locator", "Source locator", "text", {
+        full: true,
+        value: item.source_locator,
+      }) +
+      field("required_original", "Original required", "checkbox", {
+        checked: item.required_original,
+      }) +
+      field("notes", "Notes", "textarea", { full: true, value: item.notes }),
+    onSubmit: async (d) => {
+      await request(
+        `/api/cases/${encodeURIComponent(state.current.case_id)}/documents/${id}`,
+        { method: "PATCH", body: JSON.stringify(d) },
+      );
+      await caseView(state.current.case_id);
+    },
+  });
+  document.querySelector("[name=status]").value = item.status;
 }
 function guide() {
   setChrome("Desk guide", "guide");
