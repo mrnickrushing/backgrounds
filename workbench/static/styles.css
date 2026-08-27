@@ -305,6 +305,18 @@ button {
   padding: 14px 20px 0;
   align-items: center;
 }
+.saved-view-controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+.saved-view-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .chip-row {
   display: flex;
   gap: 8px;
@@ -385,6 +397,13 @@ button {
 .shortcut-grid span {
   color: var(--muted);
   font-size: 12px;
+}
+.form-note {
+  grid-column: 1 / -1;
+  margin: -2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
 }
 .empty.compact {
   padding: 16px 12px;
@@ -984,6 +1003,13 @@ dialog footer {
     align-items: flex-start;
     gap: 10px;
     flex-direction: column;
+  }
+  .filter-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .saved-view-controls {
+    justify-content: flex-start;
   }
   .case-controls {
     width: 100%;
