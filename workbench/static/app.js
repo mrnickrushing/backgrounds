@@ -10,6 +10,7 @@ const state = {
   dashboard: {
     filters: { q: "", stage: "all", due: "all" },
     views: [],
+    selected: [],
   },
 };
 const DASHBOARD_STATE_PREFIX = "backgrounds.dashboard.v1";
@@ -259,6 +260,12 @@ function mergeDashboardViews(existing, imported) {
   }
   return next.slice(0, 12);
 }
+function normalizeCaseSelection(ids = []) {
+  return [...new Set(ids.map((id) => String(id)).filter(Boolean))];
+}
+function saveDashboardSelection(ids) {
+  state.dashboard.selected = normalizeCaseSelection(ids);
+}
 function csvEscape(value) {
   const text = String(value ?? "");
   return `"${text.replaceAll('"', '""')}"`;
@@ -438,8 +445,17 @@ async function dashboard(routeParams = new URLSearchParams()) {
   state.dashboard = {
     ...persisted,
     filters: hasUrlFilters ? dashboardFiltersFromParams(routeParams) : persisted.filters,
+    selected: [],
   };
   const filters = state.dashboard.filters;
+  const dashboardRows = filterDashboardCases(state.cases, filters);
+  saveDashboardSelection(
+    state.dashboard.selected.filter((id) =>
+      dashboardRows.some((item) => item.case_id === id),
+    ),
+  );
+  const selectedIds = new Set(state.dashboard.selected);
+  const selectedRows = dashboardRows.filter((item) => selectedIds.has(item.case_id));
   const total = state.cases.length,
     open = state.cases.filter((x) => x.status !== "closed").length,
     inq = state.cases.reduce((n, x) => n + x.open_inquiries, 0),
@@ -453,6 +469,7 @@ async function dashboard(routeParams = new URLSearchParams()) {
   };
   const queueList = (items) =>
     `<div class="record-list">${items.map((item) => `<div class="record"><div><h4>${esc(item.case_id)} · ${esc(item.title)}</h4><p>${esc(item.detail)}${item.due_date ? ` · Due ${fmtDate(item.due_date)}` : ""}</p></div><div class="record-actions">${status(item.priority)}<span class="subtle">${esc(item.kind)}</span></div></div>`).join("") || '<div class="empty"><strong>No items</strong>Nothing is queued for this bucket.</div>'}</div>`;
+  const bulkBar = `<div class="bulk-bar ${selectedRows.length ? "show" : ""}" data-bulk-bar><span class="subtle" data-bulk-count>${selectedRows.length} selected</span><div class="bulk-actions"><button class="secondary" data-action="select-visible">${selectedRows.length === dashboardRows.length && dashboardRows.length ? "Clear visible" : "Select visible"}</button><select class="filter" data-bulk-status>${state.meta.case_statuses.map((x) => `<option value="${x}">${label(x)}</option>`).join("")}</select><button class="secondary" data-action="copy-selected">Copy IDs</button><button class="secondary" data-action="export-selected">Export selected</button><button class="secondary" data-action="clear-selection">Clear selection</button><button class="primary" data-action="apply-bulk">Update status</button></div></div>`;
   app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><div class="page-head-actions"><button class="secondary" data-action="save-view">Save view</button><button class="secondary" data-action="export-views">Export views</button><button class="secondary" data-action="import-views">Import views</button><button class="secondary" data-action="export-cases">Export cases</button><button class="secondary" data-action="copy-link">Copy link</button><button class="secondary" data-action="shortcuts">Shortcuts</button><button class="secondary" data-action="refresh">Refresh</button></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Across all cases</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Needs attention</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p data-dashboard-summary>${esc(dashboardFilterSummary(filters))}</p></div><div class="filter-row"><input class="filter" id="caseSearch" value="${esc(filters.q)}" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}" ${filters.stage === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all" ${filters.due === "all" ? "selected" : ""}>All due states</option><option value="overdue" ${filters.due === "overdue" ? "selected" : ""}>Overdue only</option><option value="due_soon" ${filters.due === "due_soon" ? "selected" : ""}>Due in 7 days</option></select><label class="check inline"><input type="checkbox" id="activeOnly" ${filters.activeOnly ? "checked" : ""}> Open only</label><button class="secondary" data-action="reset-filters">Reset</button></div></div><div class="filter-toolbar"><div class="chip-row">${[
     ["all", "All cases"],
     ["open", "Open only"],
@@ -463,7 +480,7 @@ async function dashboard(routeParams = new URLSearchParams()) {
       ([key, text]) =>
         `<button class="chip ${filtersEqual(filters, lensFilters[key]) ? "active" : ""}" data-lens="${key}">${text}</button>`,
     )
-    .join("")}</div><div class="saved-view-controls"><span class="subtle">${state.dashboard.views.length} saved locally</span><div class="saved-view-actions"><button class="secondary" data-action="export-views">Export</button><button class="secondary" data-action="import-views">Import</button></div></div></div><div class="saved-view-row">${state.dashboard.views.length ? state.dashboard.views.map((view) => `<div class="saved-view ${filtersEqual(filters, view.filters) ? "active" : ""}"><button class="saved-view-load" data-view-load="${esc(view.id)}"><strong>${esc(view.name)}</strong><span>${esc(dashboardFilterSummary(view.filters))}</span></button><button class="quiet saved-view-delete" data-view-delete="${esc(view.id)}">Delete</button></div>`).join("") : '<div class="empty compact"><strong>No saved views yet</strong>Capture the current filters so this browser can return to them instantly.</div>'}</div><div id="caseTable">${caseTable(state.cases)}</div></section>`;
+    .join("")}</div><div class="saved-view-controls"><span class="subtle">${state.dashboard.views.length} saved locally</span><div class="saved-view-actions"><button class="secondary" data-action="export-views">Export</button><button class="secondary" data-action="import-views">Import</button></div></div></div><div class="saved-view-row">${state.dashboard.views.length ? state.dashboard.views.map((view) => `<div class="saved-view ${filtersEqual(filters, view.filters) ? "active" : ""}"><button class="saved-view-load" data-view-load="${esc(view.id)}"><strong>${esc(view.name)}</strong><span>${esc(dashboardFilterSummary(view.filters))}</span></button><button class="quiet saved-view-delete" data-view-delete="${esc(view.id)}">Delete</button></div>`).join("") : '<div class="empty compact"><strong>No saved views yet</strong>Capture the current filters so this browser can return to them instantly.</div>'}</div>${bulkBar}<div id="caseTable">${caseTable(dashboardRows, { selectable: true, selectedIds })}</div></section>`;
   const syncDashboardIndicators = () => {
     const current = state.dashboard.filters;
     document.querySelector("[data-dashboard-summary]") &&
@@ -483,6 +500,122 @@ async function dashboard(routeParams = new URLSearchParams()) {
       card.classList.toggle("active", view ? filtersEqual(current, view.filters) : false);
     });
   };
+  const syncBulkBar = (rows) => {
+    const bar = document.querySelector("[data-bulk-bar]");
+    if (!bar) return;
+    const selected = new Set(state.dashboard.selected);
+    const selectedVisible = rows.filter((item) => selected.has(item.case_id));
+    bar.classList.toggle("show", selectedVisible.length > 0);
+    const countNode = bar.querySelector("[data-bulk-count]");
+    if (countNode) countNode.textContent = `${selectedVisible.length} selected`;
+    const selectVisible = bar.querySelector("[data-action=select-visible]");
+    if (selectVisible) {
+      selectVisible.textContent =
+        selectedVisible.length === rows.length && rows.length
+          ? "Clear visible"
+          : "Select visible";
+    }
+  };
+  const renderCaseTable = (rows) => {
+    document.querySelector("#caseTable").innerHTML = caseTable(rows, {
+      selectable: true,
+      selectedIds: new Set(state.dashboard.selected),
+    });
+    bindCaseRows();
+    bindDashboardSelection(rows);
+    syncBulkBar(rows);
+  };
+  const bindDashboardSelection = (rows) => {
+    const selected = new Set(state.dashboard.selected);
+    const visibleIds = rows.map((item) => item.case_id);
+    document.querySelectorAll("[data-case-select]").forEach((checkbox) => {
+      checkbox.onclick = (event) => event.stopPropagation();
+      checkbox.onchange = () => {
+        const id = checkbox.dataset.caseSelect;
+        if (checkbox.checked) selected.add(id);
+        else selected.delete(id);
+        saveDashboardSelection([...selected].filter((item) => visibleIds.includes(item)));
+        syncBulkBar(rows);
+      };
+    });
+    document.querySelector("[data-action=select-visible]")?.addEventListener("click", () => {
+      const allSelected = rows.length && rows.every((item) => selected.has(item.case_id));
+      if (allSelected) {
+        rows.forEach((item) => selected.delete(item.case_id));
+      } else {
+        rows.forEach((item) => selected.add(item.case_id));
+      }
+      saveDashboardSelection([...selected].filter((item) => visibleIds.includes(item)));
+      renderCaseTable(rows);
+    });
+    document.querySelector("[data-action=clear-selection]")?.addEventListener("click", () => {
+      saveDashboardSelection([]);
+      renderCaseTable(rows);
+    });
+    document.querySelector("[data-action=copy-selected]")?.addEventListener("click", async () => {
+      const selectedRows = rows.filter((item) => selected.has(item.case_id));
+      if (!selectedRows.length) {
+        toast("No rows selected");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(selectedRows.map((item) => item.case_id).join("\n"));
+        toast("Case IDs copied");
+      } catch (err) {
+        toast(err.message || "Unable to copy case IDs");
+      }
+    });
+    document.querySelector("[data-action=export-selected]")?.addEventListener("click", () => {
+      const selectedRows = rows.filter((item) => selected.has(item.case_id));
+      if (!selectedRows.length) {
+        toast("No rows selected");
+        return;
+      }
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      downloadCsv(
+        `backgrounds-selected-cases-${stamp}.csv`,
+        selectedRows.map((c) => ({
+          case_id: c.case_id,
+          title: c.title,
+          investigator: c.investigator || "",
+          status: c.status,
+          review_status: c.review_status,
+          priority: c.priority,
+          target_date: c.target_date || "",
+          open_inquiries: c.open_inquiries,
+          overdue_follow_ups: c.overdue_follow_ups,
+          open_discrepancies: c.open_discrepancies,
+          open_documents: c.open_documents,
+          tags: (c.tags || []).join(" | "),
+        })),
+        ["case_id", "title", "investigator", "status", "review_status", "priority", "target_date", "open_inquiries", "overdue_follow_ups", "open_discrepancies", "open_documents", "tags"],
+      );
+      toast("Selected cases exported");
+    });
+    document.querySelector("[data-action=apply-bulk]")?.addEventListener("click", async () => {
+      const selectedRows = rows.filter((item) => selected.has(item.case_id));
+      if (!selectedRows.length) {
+        toast("No rows selected");
+        return;
+      }
+      const statusValue = String(document.querySelector("[data-bulk-status]")?.value || "");
+      if (!statusValue) {
+        toast("Choose a status");
+        return;
+      }
+      await Promise.all(
+        selectedRows.map((item) =>
+          request(`/api/cases/${encodeURIComponent(item.case_id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ status: statusValue }),
+          }),
+        ),
+      );
+      saveDashboardSelection([]);
+      toast(`Updated ${selectedRows.length} cases`);
+      dashboard();
+    });
+  };
   syncDashboardIndicators();
   syncDashboardUrl(filters);
   const apply = () => {
@@ -492,12 +625,13 @@ async function dashboard(routeParams = new URLSearchParams()) {
       activeOnly = document.querySelector("#activeOnly").checked;
     saveDashboardFilters({ q, stage, due, activeOnly });
     const rows = filterDashboardCases(state.cases, { q, stage, due, activeOnly });
-    document.querySelector("#caseTable").innerHTML = caseTable(rows);
+    saveDashboardSelection([]);
     syncDashboardIndicators();
-    bindCaseRows();
+    renderCaseTable(rows);
   };
   const setFilters = (next) => {
     saveDashboardFilters(next);
+    saveDashboardSelection([]);
     dashboard();
   };
   const dashboardActions = {
@@ -686,11 +820,16 @@ async function dashboard(routeParams = new URLSearchParams()) {
   );
   bindDashboardHotkeys(dashboardActions);
   bindCaseRows();
+  bindDashboardSelection(dashboardRows);
+  syncBulkBar(dashboardRows);
 }
-function caseTable(cases) {
+function caseTable(cases, { selectable = false, selectedIds = new Set() } = {}) {
   if (!cases.length)
     return `<div class="empty"><strong>No matching cases</strong>Adjust the queue filters or create a new case.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Case</th><th>Stage / review</th><th>Completion</th><th>Open work</th><th>Target</th><th>Priority</th></tr></thead><tbody>${cases.map((c) => `<tr data-case="${esc(c.case_id)}"><td><span class="case-id">${esc(c.case_id)}</span><span class="subtle">${(c.tags || []).map((x) => "· " + esc(x)).join(" ") || "No tags"}</span></td><td>${status(c.status)}<span class="subtle">${esc(label(c.review_status))}</span></td><td>${progress(c.areas_complete, c.areas_total)}</td><td>${c.open_inquiries} inquiries<span class="subtle">${c.overdue_follow_ups} overdue · ${c.open_discrepancies} discrepancies · ${c.open_documents} documents</span></td><td>${fmtDate(c.target_date)}</td><td>${status(c.priority)}</td></tr>`).join("")}</tbody></table></div>`;
+  const headers = selectable
+    ? `<tr><th>Select</th><th>Case</th><th>Stage / review</th><th>Completion</th><th>Open work</th><th>Target</th><th>Priority</th></tr>`
+    : `<tr><th>Case</th><th>Stage / review</th><th>Completion</th><th>Open work</th><th>Target</th><th>Priority</th></tr>`;
+  return `<div class="table-wrap"><table><thead>${headers}</thead><tbody>${cases.map((c) => `<tr data-case="${esc(c.case_id)}">${selectable ? `<td><input class="row-select" type="checkbox" data-case-select="${esc(c.case_id)}" ${selectedIds.has(c.case_id) ? "checked" : ""}></td>` : ""}<td><span class="case-id">${esc(c.case_id)}</span><span class="subtle">${(c.tags || []).map((x) => "· " + esc(x)).join(" ") || "No tags"}</span></td><td>${status(c.status)}<span class="subtle">${esc(label(c.review_status))}</span></td><td>${progress(c.areas_complete, c.areas_total)}</td><td>${c.open_inquiries} inquiries<span class="subtle">${c.overdue_follow_ups} overdue · ${c.open_discrepancies} discrepancies · ${c.open_documents} documents</span></td><td>${fmtDate(c.target_date)}</td><td>${status(c.priority)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function bindCaseRows() {
   document
