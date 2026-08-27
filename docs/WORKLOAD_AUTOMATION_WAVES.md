@@ -16,7 +16,7 @@ Status as of 2026-08-27: Waves 1 through 10 are merged to `main`. Wave 11 adds b
 ## Wave 11 — Bulk queue triage
 
 - Select visible cases from the queue table for batch work without leaving the dashboard.
-- Copy selected case IDs, export selected rows, or update the selected cases to a new stage in one action.
+- Copy selected case IDs, export selected rows, or update the selected cases to a new stage, priority, or target date in one action.
 - Clear or rebuild the visible selection as filters change so the batch action matches the current queue slice.
 - Gates: browser walkthrough, checkbox selection, bulk export, bulk status update, mobile-width check.
 
