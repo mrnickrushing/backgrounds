@@ -2,7 +2,7 @@
 
 Purpose: reduce administrative load in CDCR background-investigation work without replacing eSOPH, agency policy, investigator judgment, or approved systems. All examples and tests use fictional, non-PII data.
 
-Status as of 2026-08-27: Waves 1 through 8 are merged to `main`. Wave 9 adds portable saved views and is pending merge.
+Status as of 2026-08-27: Waves 1 through 9 are merged to `main`. Wave 10 adds current-queue export and is pending merge.
 
 - Wave 1 / 2 / 3 merged in PR #12, merge commit `588dc00`
 - Wave 4 merged in PR #13, merge commit `0a638ef`
@@ -10,6 +10,14 @@ Status as of 2026-08-27: Waves 1 through 8 are merged to `main`. Wave 9 adds por
 - Wave 6 merged in PR #16, merge commit `2cdfb16`
 - Wave 7 merged in PR #17, merge commit `1d58cdc`
 - Wave 8 merged in PR #18, merge commit `83525c7`
+- Wave 9 merged in PR #19, merge commit `aebe2c5`
+
+## Wave 10 — Current-queue export
+
+- Export the current filtered case queue to CSV for offline follow-up, note taking, or external review.
+- Keep the export aligned with the active dashboard filters so the download matches what the investigator is seeing.
+- Add a keyboard shortcut and help entry so the export path is fast to discover in daily work.
+- Gates: browser walkthrough, CSV round-trip, empty-state handling, mobile-width check.
 
 ## Wave 9 — Portable saved views
 
