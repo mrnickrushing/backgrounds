@@ -2,19 +2,20 @@
 
 Purpose: reduce administrative load in CDCR background-investigation work without replacing eSOPH, agency policy, investigator judgment, or approved systems. All examples and tests use fictional, non-PII data.
 
-Status as of 2026-08-27: Waves 1 through 6 are merged to `main`. Wave 7 adds shareable dashboard links and is pending merge.
+Status as of 2026-08-27: Waves 1 through 7 are merged to `main`. Wave 8 adds dashboard keyboard shortcuts and is pending merge.
 
 - Wave 1 / 2 / 3 merged in PR #12, merge commit `588dc00`
 - Wave 4 merged in PR #13, merge commit `0a638ef`
 - Wave 5 merged in PR #14, merge commit `810b109`
-## Wave 6 — Saved views and fast filters
-
-- Persisted command-center filters for search, stage, due state, and open-only views.
-- Quick lenses for all cases, open cases, overdue work, and due-soon work.
-- Local saved views for frequently used queue slices, with delete support and mobile-friendly wrapping.
-- Gates: browser walkthrough, saved-view persistence, filter-sync assertions, mobile-width check.
-
 - Wave 6 merged in PR #16, merge commit `2cdfb16`
+- Wave 7 merged in PR #17, merge commit `1d58cdc`
+
+## Wave 8 — Dashboard keyboard shortcuts
+
+- Keyboard shortcuts for search focus, saved views, copy-link, lens switching, and clearing filters.
+- A shortcut help modal so investigators can discover the commands without reading source.
+- The shortcuts ignore typed input and only activate on the dashboard shell.
+- Gates: browser walkthrough, keybinding suppression in inputs, modal help, mobile-width check.
 
 ## Wave 7 — Shareable dashboard links
 
@@ -22,6 +23,13 @@ Status as of 2026-08-27: Waves 1 through 6 are merged to `main`. Wave 7 adds sha
 - Copyable dashboard links that reopen the same queue slice in another browser or device.
 - Local saved views still handle frequently used queue slices, with delete support and mobile-friendly wrapping.
 - Gates: browser walkthrough, saved-view persistence, URL-sync assertions, mobile-width check.
+
+## Wave 6 — Saved views and fast filters
+
+- Persisted command-center filters for search, stage, due state, and open-only views.
+- Quick lenses for all cases, open cases, overdue work, and due-soon work.
+- Local saved views for frequently used queue slices, with delete support and mobile-friendly wrapping.
+- Gates: browser walkthrough, saved-view persistence, filter-sync assertions, mobile-width check.
 
 ## Wave 1 — Life history and documents
 
