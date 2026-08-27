@@ -107,6 +107,7 @@ function persistDashboardPrefs() {
 function saveDashboardFilters(filters) {
   state.dashboard.filters = normalizeDashboardFilters(filters);
   persistDashboardPrefs();
+  syncDashboardUrl(state.dashboard.filters);
 }
 function saveDashboardViews(views) {
   state.dashboard.views = views.slice(0, 12);
@@ -156,6 +157,53 @@ function dashboardLensFilters() {
     overdue: { q: "", stage: "all", due: "overdue", activeOnly: true },
     dueSoon: { q: "", stage: "all", due: "due_soon", activeOnly: true },
   };
+}
+function readRouteState() {
+  const raw = location.hash.replace(/^#\/?/, "");
+  const [pathPart = "", queryPart = ""] = raw.split("?");
+  return {
+    parts: pathPart.split("/").filter(Boolean),
+    params: new URLSearchParams(queryPart),
+  };
+}
+function dashboardFiltersFromParams(params) {
+  const q = params.get("q") || "";
+  const stage = params.get("stage") || "all";
+  const due = params.get("due") || "all";
+  const open = params.get("open") === "1" || params.get("activeOnly") === "1";
+  return normalizeDashboardFilters({ q, stage, due, activeOnly: open });
+}
+function dashboardParamsFromFilters(filters) {
+  const current = normalizeDashboardFilters(filters);
+  const params = new URLSearchParams();
+  if (current.q) params.set("q", current.q);
+  if (current.stage !== "all") params.set("stage", current.stage);
+  if (current.due !== "all") params.set("due", current.due);
+  if (current.activeOnly) params.set("open", "1");
+  return params;
+}
+function dashboardHash(filters) {
+  const params = dashboardParamsFromFilters(filters).toString();
+  return params ? `#/?${params}` : "#/";
+}
+function syncDashboardUrl(filters) {
+  const target = dashboardHash(filters);
+  if (location.hash !== target) history.replaceState(null, "", target);
+}
+async function copyShareLink() {
+  const url = location.href;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(url);
+    return;
+  }
+  const node = document.createElement("textarea");
+  node.value = url;
+  node.style.position = "fixed";
+  node.style.opacity = "0";
+  document.body.appendChild(node);
+  node.select();
+  document.execCommand("copy");
+  node.remove();
 }
 function status(value) {
   return `<span class="status ${esc(value)}">${esc(label(value))}</span>`;
@@ -228,13 +276,18 @@ async function loadMeta() {
 async function loadTemplates() {
   if (!state.templates) state.templates = await request("/api/templates");
 }
-async function dashboard() {
+async function dashboard(routeParams = new URLSearchParams()) {
   setChrome("Caseload", "dashboard");
   const [me, cases, queue] = await Promise.all([request("/api/me"), request("/api/cases"), request("/api/queue")]);
   state.me = me;
   state.cases = cases;
   state.queue = queue;
-  state.dashboard = loadDashboardPrefs(dashboardScope());
+  const persisted = loadDashboardPrefs(dashboardScope());
+  const hasUrlFilters = ["q", "stage", "due", "open", "activeOnly"].some((key) => routeParams.has(key));
+  state.dashboard = {
+    ...persisted,
+    filters: hasUrlFilters ? dashboardFiltersFromParams(routeParams) : persisted.filters,
+  };
   const filters = state.dashboard.filters;
   const total = state.cases.length,
     open = state.cases.filter((x) => x.status !== "closed").length,
@@ -249,7 +302,7 @@ async function dashboard() {
   };
   const queueList = (items) =>
     `<div class="record-list">${items.map((item) => `<div class="record"><div><h4>${esc(item.case_id)} · ${esc(item.title)}</h4><p>${esc(item.detail)}${item.due_date ? ` · Due ${fmtDate(item.due_date)}` : ""}</p></div><div class="record-actions">${status(item.priority)}<span class="subtle">${esc(item.kind)}</span></div></div>`).join("") || '<div class="empty"><strong>No items</strong>Nothing is queued for this bucket.</div>'}</div>`;
-  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><div class="page-head-actions"><button class="secondary" data-action="save-view">Save view</button><button class="secondary" data-action="refresh">Refresh</button></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Across all cases</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Needs attention</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p data-dashboard-summary>${esc(dashboardFilterSummary(filters))}</p></div><div class="filter-row"><input class="filter" id="caseSearch" value="${esc(filters.q)}" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}" ${filters.stage === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all" ${filters.due === "all" ? "selected" : ""}>All due states</option><option value="overdue" ${filters.due === "overdue" ? "selected" : ""}>Overdue only</option><option value="due_soon" ${filters.due === "due_soon" ? "selected" : ""}>Due in 7 days</option></select><label class="check inline"><input type="checkbox" id="activeOnly" ${filters.activeOnly ? "checked" : ""}> Open only</label><button class="secondary" data-action="reset-filters">Reset</button></div></div><div class="filter-toolbar"><div class="chip-row">${[
+  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><div class="page-head-actions"><button class="secondary" data-action="save-view">Save view</button><button class="secondary" data-action="copy-link">Copy link</button><button class="secondary" data-action="refresh">Refresh</button></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Across all cases</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Needs attention</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p data-dashboard-summary>${esc(dashboardFilterSummary(filters))}</p></div><div class="filter-row"><input class="filter" id="caseSearch" value="${esc(filters.q)}" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}" ${filters.stage === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all" ${filters.due === "all" ? "selected" : ""}>All due states</option><option value="overdue" ${filters.due === "overdue" ? "selected" : ""}>Overdue only</option><option value="due_soon" ${filters.due === "due_soon" ? "selected" : ""}>Due in 7 days</option></select><label class="check inline"><input type="checkbox" id="activeOnly" ${filters.activeOnly ? "checked" : ""}> Open only</label><button class="secondary" data-action="reset-filters">Reset</button></div></div><div class="filter-toolbar"><div class="chip-row">${[
     ["all", "All cases"],
     ["open", "Open only"],
     ["overdue", "Overdue"],
@@ -280,6 +333,7 @@ async function dashboard() {
     });
   };
   syncDashboardIndicators();
+  syncDashboardUrl(filters);
   const apply = () => {
     const q = document.querySelector("#caseSearch").value.toLowerCase(),
       stage = document.querySelector("#caseFilter").value,
@@ -305,6 +359,14 @@ async function dashboard() {
     dashboard();
   };
   document.querySelector("[data-action=refresh]").onclick = route;
+  document.querySelector("[data-action=copy-link]").onclick = async () => {
+    try {
+      await copyShareLink();
+      toast("Link copied");
+    } catch (err) {
+      toast(err.message || "Unable to copy link");
+    }
+  };
   document.querySelector("[data-action=reset-filters]").onclick = () =>
     setFilters({ q: "", stage: "all", due: "all", activeOnly: false });
   document.querySelector("[data-action=save-view]").onclick = () => {
@@ -1463,13 +1525,13 @@ async function route() {
   try {
     await loadMeta();
     await refreshAlertCount();
-    const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+    const { parts, params } = readRouteState();
     if (parts[0] === "case" && parts[1])
       await caseView(decodeURIComponent(parts[1]));
     else if (parts[0] === "guide") guide();
     else if (parts[0] === "alerts") await alerts();
     else if (parts[0] === "account") await account();
-    else await dashboard();
+    else await dashboard(params);
   } catch (err) {
     app.innerHTML = `<div class="empty"><strong>Unable to load the workbench</strong>${esc(err.message)}</div>`;
   }
