@@ -208,18 +208,7 @@ function syncDashboardUrl(filters) {
 }
 async function copyShareLink() {
   const url = location.href;
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(url);
-    return;
-  }
-  const node = document.createElement("textarea");
-  node.value = url;
-  node.style.position = "fixed";
-  node.style.opacity = "0";
-  document.body.appendChild(node);
-  node.select();
-  document.execCommand("copy");
-  node.remove();
+  await copyText(url);
 }
 function triggerDownload(filename, content, type = "application/json") {
   const blob = new Blob([content], { type });
@@ -231,6 +220,20 @@ function triggerDownload(filename, content, type = "application/json") {
   link.click();
   link.remove();
   URL.revokeObjectURL(href);
+}
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const node = document.createElement("textarea");
+  node.value = text;
+  node.style.position = "fixed";
+  node.style.opacity = "0";
+  document.body.appendChild(node);
+  node.select();
+  document.execCommand("copy");
+  node.remove();
 }
 function extractDashboardViews(payload) {
   const list = Array.isArray(payload) ? payload : payload?.views;
@@ -277,6 +280,38 @@ function downloadCsv(filename, rows, columns = []) {
     ...rows.map((row) => header.map((key) => csvEscape(row[key])).join(",")),
   ].join("\n");
   triggerDownload(filename, `${body}\n`, "text/csv");
+}
+function downloadText(filename, content) {
+  triggerDownload(filename, content, "text/plain;charset=utf-8");
+}
+function checklistSummary(items = []) {
+  const remaining = (items || []).filter((item) => !item.complete);
+  if (!remaining.length) return "None";
+  return remaining
+    .map((item) => (item.detail ? `${item.label} (${item.detail})` : item.label))
+    .join("; ");
+}
+function caseBrief(c) {
+  const audit = c.audit || {};
+  const metrics = audit.metrics || {};
+  const warnings = [...(audit.errors || []), ...(audit.warnings || [])].slice(0, 5);
+  const lines = [
+    `Case: ${c.case_id}`,
+    `Investigator: ${c.investigator || "Unassigned"}`,
+    `Stage: ${label(c.status)} · Priority: ${label(c.priority)}`,
+    `Target date: ${fmtDate(c.target_date)}`,
+    `Coverage: ${metrics.areas_complete || 0}/${metrics.areas_total || 12} areas complete`,
+    `Open work: ${metrics.open_inquiries || 0} inquiries, ${metrics.open_discrepancies || 0} discrepancies, ${metrics.sources || 0} sources, ${metrics.documents || 0} documents`,
+    `Overdue follow-ups: ${c.overdue_follow_ups || 0}`,
+    `Ready for review: ${audit.ready ? "Yes" : "No"}`,
+    `Next checklist items: ${checklistSummary(audit.checklist || [])}`,
+  ];
+  if (warnings.length) {
+    lines.push("");
+    lines.push("Review prompts:");
+    warnings.forEach((item) => lines.push(`- ${item}`));
+  }
+  return `${lines.join("\n")}\n`;
 }
 function isEditableTarget(target) {
   return Boolean(
@@ -853,7 +888,7 @@ async function caseView(id) {
   const c = state.current,
     a = c.audit.metrics,
     pct = Math.round((a.areas_complete / a.areas_total) * 100);
-  app.innerHTML = `<div class="case-hero"><div class="case-title"><button class="back" aria-label="Back to caseload">←</button><div><p class="eyebrow">Background investigation</p><h1>${esc(c.case_id)}</h1><div class="case-meta">${esc(c.investigator || "Unassigned investigator")} · Target ${fmtDate(c.target_date)}</div></div></div><div class="case-controls"><select id="caseStatus" aria-label="Case stage">${state.meta.case_statuses.map((x) => `<option value="${x}" ${x === c.status ? "selected" : ""}>${label(x)}</option>`).join("")}</select><button class="primary" data-action="add-inquiry">Add inquiry</button></div></div><div class="case-grid"><section class="panel"><div class="tabs">${[
+  app.innerHTML = `<div class="case-hero"><div class="case-title"><button class="back" aria-label="Back to caseload">←</button><div><p class="eyebrow">Background investigation</p><h1>${esc(c.case_id)}</h1><div class="case-meta">${esc(c.investigator || "Unassigned investigator")} · Target ${fmtDate(c.target_date)}</div></div></div><div class="case-controls"><select id="caseStatus" aria-label="Case stage">${state.meta.case_statuses.map((x) => `<option value="${x}" ${x === c.status ? "selected" : ""}>${label(x)}</option>`).join("")}</select><button class="secondary" data-action="copy-brief">Copy brief</button><button class="secondary" data-action="download-brief">Download brief</button><button class="primary" data-action="add-inquiry">Add inquiry</button></div></div><div class="case-grid"><section class="panel"><div class="tabs">${[
     ["overview", "Overview"],
     ["inquiries", "Inquiries"],
     ["discrepancies", "Discrepancies"],
@@ -889,6 +924,18 @@ async function caseView(id) {
     });
     toast("Case stage updated");
     caseView(id);
+  };
+  document.querySelector("[data-action=copy-brief]").onclick = async () => {
+    try {
+      await copyText(caseBrief(c));
+      toast("Case brief copied");
+    } catch (err) {
+      toast(err.message || "Unable to copy case brief");
+    }
+  };
+  document.querySelector("[data-action=download-brief]").onclick = () => {
+    downloadText(`${c.case_id}-handoff-brief.txt`, caseBrief(c));
+    toast("Case brief downloaded");
   };
   document.querySelectorAll("[data-tab]").forEach(
     (x) =>

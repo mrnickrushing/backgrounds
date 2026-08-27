@@ -2,7 +2,7 @@
 
 Purpose: reduce administrative load in CDCR background-investigation work without replacing eSOPH, agency policy, investigator judgment, or approved systems. All examples and tests use fictional, non-PII data.
 
-Status as of 2026-08-27: Waves 1 through 10 are merged to `main`. Wave 11 adds bulk queue triage and is pending merge.
+Status as of 2026-08-27: Waves 1 through 11 are merged to `main`. Wave 12 adds a case handoff brief and is pending merge.
 
 - Wave 1 / 2 / 3 merged in PR #12, merge commit `588dc00`
 - Wave 4 merged in PR #13, merge commit `0a638ef`
@@ -12,6 +12,13 @@ Status as of 2026-08-27: Waves 1 through 10 are merged to `main`. Wave 11 adds b
 - Wave 8 merged in PR #18, merge commit `83525c7`
 - Wave 9 merged in PR #19, merge commit `aebe2c5`
 - Wave 10 merged in PR #20, merge commit `8bb8e45`
+- Wave 11 merged in PR #22, merge commit `f9146a6`
+
+## Wave 12 — Case handoff brief
+
+- Copy or download a concise case brief that captures stage, target date, coverage, open work, and review prompts.
+- Keep the brief grounded in the existing audit and checklist data so investigators can paste it into handoff notes or shift summaries.
+- Gates: browser walkthrough, clipboard/download round-trip, audit-summary formatting, mobile-width check.
 
 ## Wave 11 — Bulk queue triage
 
