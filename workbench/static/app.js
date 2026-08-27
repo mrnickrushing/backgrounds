@@ -7,7 +7,12 @@ const state = {
   current: null,
   tab: "overview",
   reportSection: null,
+  dashboard: {
+    filters: { q: "", stage: "all", due: "all" },
+    views: [],
+  },
 };
+const DASHBOARD_STATE_PREFIX = "backgrounds.dashboard.v1";
 const app = document.querySelector("#app"),
   modal = document.querySelector("#modal"),
   modalForm = document.querySelector("#modalForm");
@@ -54,6 +59,103 @@ function toast(message) {
   node.textContent = message;
   node.classList.add("show");
   setTimeout(() => node.classList.remove("show"), 2200);
+}
+function storageKey(scope, suffix) {
+  return `${DASHBOARD_STATE_PREFIX}.${scope}.${suffix}`;
+}
+function readJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeJSON(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+function normalizeDashboardFilters(filters = {}) {
+  const next = {
+    q: String(filters.q || "").slice(0, 120),
+    stage: String(filters.stage || "all"),
+    due: String(filters.due || "all"),
+    activeOnly: Boolean(filters.activeOnly),
+  };
+  if (!["all", "overdue", "due_soon"].includes(next.due)) next.due = "all";
+  return next;
+}
+function dashboardScope() {
+  return state.me?.username || state.me?.display_name || "shared";
+}
+function loadDashboardPrefs(scope) {
+  const savedViews = readJSON(storageKey(scope, "views"), []);
+  return {
+    filters: normalizeDashboardFilters(
+      readJSON(storageKey(scope, "filters"), { q: "", stage: "all", due: "all" }),
+    ),
+    views: Array.isArray(savedViews) ? savedViews : [],
+  };
+}
+function persistDashboardPrefs() {
+  const scope = dashboardScope();
+  writeJSON(storageKey(scope, "filters"), normalizeDashboardFilters(state.dashboard.filters));
+  writeJSON(
+    storageKey(scope, "views"),
+    (state.dashboard.views || []).slice(0, 12),
+  );
+}
+function saveDashboardFilters(filters) {
+  state.dashboard.filters = normalizeDashboardFilters(filters);
+  persistDashboardPrefs();
+}
+function saveDashboardViews(views) {
+  state.dashboard.views = views.slice(0, 12);
+  persistDashboardPrefs();
+}
+function dueLabel(value) {
+  return {
+    all: "All due states",
+    overdue: "Overdue only",
+    due_soon: "Due in 7 days",
+  }[value] || "All due states";
+}
+function dashboardFilterSummary(filters) {
+  const parts = [];
+  if (filters.q) parts.push(`Search “${filters.q}”`);
+  if (filters.stage !== "all") parts.push(label(filters.stage));
+  if (filters.due !== "all") parts.push(dueLabel(filters.due));
+  if (filters.activeOnly) parts.push("Open only");
+  return parts.length ? parts.join(" · ") : "All cases";
+}
+function matchDueFilter(caseItem, due) {
+  if (due === "overdue") return caseItem.overdue_follow_ups > 0;
+  if (due === "due_soon") {
+    if (!caseItem.target_date) return false;
+    const target = new Date(`${caseItem.target_date}T12:00:00`);
+    if (Number.isNaN(target.getTime())) return false;
+    const now = new Date();
+    const days = Math.ceil((target.setHours(0, 0, 0, 0) - now.setHours(0, 0, 0, 0)) / 86400000);
+    return days >= 0 && days <= 7;
+  }
+  return true;
+}
+function filtersEqual(a, b) {
+  const left = normalizeDashboardFilters(a);
+  const right = normalizeDashboardFilters(b);
+  return (
+    left.q === right.q &&
+    left.stage === right.stage &&
+    left.due === right.due &&
+    left.activeOnly === right.activeOnly
+  );
+}
+function dashboardLensFilters() {
+  return {
+    all: { q: "", stage: "all", due: "all", activeOnly: false },
+    open: { q: "", stage: "all", due: "all", activeOnly: true },
+    overdue: { q: "", stage: "all", due: "overdue", activeOnly: true },
+    dueSoon: { q: "", stage: "all", due: "due_soon", activeOnly: true },
+  };
 }
 function status(value) {
   return `<span class="status ${esc(value)}">${esc(label(value))}</span>`;
@@ -132,18 +234,58 @@ async function dashboard() {
   state.me = me;
   state.cases = cases;
   state.queue = queue;
+  state.dashboard = loadDashboardPrefs(dashboardScope());
+  const filters = state.dashboard.filters;
   const total = state.cases.length,
     open = state.cases.filter((x) => x.status !== "closed").length,
     inq = state.cases.reduce((n, x) => n + x.open_inquiries, 0),
     overdue = state.cases.reduce((n, x) => n + x.overdue_follow_ups, 0),
     roleLabel = state.queue.role === "supervisor" ? "Supervisor view" : "Investigator view";
+  const lensFilters = {
+    all: { q: "", stage: "all", due: "all", activeOnly: false },
+    open: { q: "", stage: "all", due: "all", activeOnly: true },
+    overdue: { q: "", stage: "all", due: "overdue", activeOnly: true },
+    dueSoon: { q: "", stage: "all", due: "due_soon", activeOnly: true },
+  };
   const queueList = (items) =>
     `<div class="record-list">${items.map((item) => `<div class="record"><div><h4>${esc(item.case_id)} · ${esc(item.title)}</h4><p>${esc(item.detail)}${item.due_date ? ` · Due ${fmtDate(item.due_date)}` : ""}</p></div><div class="record-actions">${status(item.priority)}<span class="subtle">${esc(item.kind)}</span></div></div>`).join("") || '<div class="empty"><strong>No items</strong>Nothing is queued for this bucket.</div>'}</div>`;
-  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><button class="secondary" data-action="refresh">Refresh</button></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Due or overdue items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Due within 7 days</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p>Search and filter the operational caseload.</p></div><div class="filter-row"><input class="filter" id="caseSearch" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}">${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all">All due states</option><option value="overdue">Overdue only</option></select></div></div><div id="caseTable">${caseTable(state.cases)}</div></section>`;
+  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><div class="page-head-actions"><button class="secondary" data-action="save-view">Save view</button><button class="secondary" data-action="refresh">Refresh</button></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Across all cases</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Needs attention</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p data-dashboard-summary>${esc(dashboardFilterSummary(filters))}</p></div><div class="filter-row"><input class="filter" id="caseSearch" value="${esc(filters.q)}" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}" ${filters.stage === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all" ${filters.due === "all" ? "selected" : ""}>All due states</option><option value="overdue" ${filters.due === "overdue" ? "selected" : ""}>Overdue only</option><option value="due_soon" ${filters.due === "due_soon" ? "selected" : ""}>Due in 7 days</option></select><label class="check inline"><input type="checkbox" id="activeOnly" ${filters.activeOnly ? "checked" : ""}> Open only</label><button class="secondary" data-action="reset-filters">Reset</button></div></div><div class="filter-toolbar"><div class="chip-row">${[
+    ["all", "All cases"],
+    ["open", "Open only"],
+    ["overdue", "Overdue"],
+    ["dueSoon", "Due soon"],
+  ]
+    .map(
+      ([key, text]) =>
+        `<button class="chip ${filtersEqual(filters, lensFilters[key]) ? "active" : ""}" data-lens="${key}">${text}</button>`,
+    )
+    .join("")}</div><div class="saved-view-controls"><span class="subtle">${state.dashboard.views.length} saved locally</span></div></div><div class="saved-view-row">${state.dashboard.views.length ? state.dashboard.views.map((view) => `<div class="saved-view ${filtersEqual(filters, view.filters) ? "active" : ""}"><button class="saved-view-load" data-view-load="${esc(view.id)}"><strong>${esc(view.name)}</strong><span>${esc(dashboardFilterSummary(view.filters))}</span></button><button class="quiet saved-view-delete" data-view-delete="${esc(view.id)}">Delete</button></div>`).join("") : '<div class="empty compact"><strong>No saved views yet</strong>Capture the current filters so this browser can return to them instantly.</div>'}</div><div id="caseTable">${caseTable(state.cases)}</div></section>`;
+  const syncDashboardIndicators = () => {
+    const current = state.dashboard.filters;
+    document.querySelector("[data-dashboard-summary]") &&
+      (document.querySelector("[data-dashboard-summary]").textContent =
+        dashboardFilterSummary(current));
+    document.querySelectorAll("[data-lens]").forEach((button) =>
+      button.classList.toggle(
+        "active",
+        filtersEqual(current, lensFilters[button.dataset.lens]),
+      ),
+    );
+    document.querySelectorAll(".saved-view").forEach((card) => {
+      const loadButton = card.querySelector("[data-view-load]");
+      const view = state.dashboard.views.find(
+        (item) => item.id === loadButton?.dataset.viewLoad,
+      );
+      card.classList.toggle("active", view ? filtersEqual(current, view.filters) : false);
+    });
+  };
+  syncDashboardIndicators();
   const apply = () => {
     const q = document.querySelector("#caseSearch").value.toLowerCase(),
       stage = document.querySelector("#caseFilter").value,
-      due = document.querySelector("#dueFilter").value;
+      due = document.querySelector("#dueFilter").value,
+      activeOnly = document.querySelector("#activeOnly").checked;
+    saveDashboardFilters({ q, stage, due, activeOnly });
     const rows = state.cases.filter(
       (x) =>
         (!q ||
@@ -151,15 +293,75 @@ async function dashboard() {
             .toLowerCase()
             .includes(q)) &&
         (stage === "all" || x.status === stage) &&
-        (due === "all" || x.overdue_follow_ups > 0),
+        (activeOnly ? x.status !== "closed" : true) &&
+        matchDueFilter(x, due),
     );
     document.querySelector("#caseTable").innerHTML = caseTable(rows);
+    syncDashboardIndicators();
     bindCaseRows();
   };
+  const setFilters = (next) => {
+    saveDashboardFilters(next);
+    dashboard();
+  };
   document.querySelector("[data-action=refresh]").onclick = route;
+  document.querySelector("[data-action=reset-filters]").onclick = () =>
+    setFilters({ q: "", stage: "all", due: "all", activeOnly: false });
+  document.querySelector("[data-action=save-view]").onclick = () => {
+    const currentFilters = { ...state.dashboard.filters };
+    openModal({
+      title: "Save current view",
+      eyebrow: "Caseload command center",
+      body: field("view_name", "View name", "text", {
+        required: true,
+        placeholder: "Overdue follow-ups",
+        value: dashboardFilterSummary(currentFilters),
+      }),
+      submit: "Save view",
+      onSubmit: async (data) => {
+        const name = String(data.view_name || "").trim();
+        if (!name) throw new Error("Enter a view name");
+        const views = [
+          ...state.dashboard.views.filter(
+            (view) =>
+              view.name.toLowerCase() !== name.toLowerCase() &&
+              !filtersEqual(view.filters, currentFilters),
+          ),
+          {
+            id: `view-${Date.now().toString(36)}`,
+            name,
+            filters: currentFilters,
+          },
+        ];
+        saveDashboardViews(views);
+      },
+    });
+  };
   document.querySelector("#caseSearch").oninput = apply;
   document.querySelector("#caseFilter").onchange = apply;
   document.querySelector("#dueFilter").onchange = apply;
+  document.querySelector("#activeOnly").onchange = apply;
+  document.querySelectorAll("[data-lens]").forEach(
+    (button) =>
+      (button.onclick = () => setFilters(lensFilters[button.dataset.lens])),
+  );
+  document.querySelectorAll("[data-view-load]").forEach(
+    (button) =>
+      (button.onclick = () => {
+        const view = state.dashboard.views.find((item) => item.id === button.dataset.viewLoad);
+        if (!view) return;
+        setFilters(view.filters);
+      }),
+  );
+  document.querySelectorAll("[data-view-delete]").forEach(
+    (button) =>
+      (button.onclick = () => {
+        saveDashboardViews(
+          state.dashboard.views.filter((item) => item.id !== button.dataset.viewDelete),
+        );
+        dashboard();
+      }),
+  );
   bindCaseRows();
 }
 function caseTable(cases) {
