@@ -282,6 +282,8 @@ button {
 .filter-row {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 .filter {
   border: 1px solid var(--line);
@@ -290,6 +292,88 @@ button {
   padding: 7px 10px;
   color: var(--muted);
   font-size: 12px;
+}
+.page-head-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.filter-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px 0;
+  align-items: center;
+}
+.chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chip {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.chip.active {
+  background: var(--green2);
+  border-color: transparent;
+  color: var(--green);
+}
+.saved-view-row {
+  display: grid;
+  gap: 8px;
+  padding: 14px 20px 18px;
+}
+.saved-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 11px 13px;
+}
+.saved-view.active {
+  border-color: #9fb9a9;
+  background: #f8fbf8;
+}
+.saved-view-load {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+.saved-view-load strong {
+  display: block;
+  font-size: 13px;
+  color: var(--ink);
+}
+.saved-view-load span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 3px;
+}
+.saved-view-delete {
+  justify-self: end;
+}
+.empty.compact {
+  padding: 16px 12px;
+  text-align: left;
+}
+.empty.compact strong {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 3px;
 }
 .table-wrap {
   overflow: auto;
