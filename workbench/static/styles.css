@@ -365,6 +365,27 @@ button {
 .saved-view-delete {
   justify-self: end;
 }
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.shortcut-grid div {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  display: grid;
+  gap: 3px;
+}
+.shortcut-grid strong {
+  font-size: 16px;
+  color: var(--green);
+}
+.shortcut-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
 .empty.compact {
   padding: 16px 12px;
   text-align: left;

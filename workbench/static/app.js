@@ -13,6 +13,7 @@ const state = {
   },
 };
 const DASHBOARD_STATE_PREFIX = "backgrounds.dashboard.v1";
+let dashboardHotkeyHandler = null;
 const app = document.querySelector("#app"),
   modal = document.querySelector("#modal"),
   modalForm = document.querySelector("#modalForm");
@@ -205,6 +206,56 @@ async function copyShareLink() {
   document.execCommand("copy");
   node.remove();
 }
+function isEditableTarget(target) {
+  return Boolean(
+    target?.closest?.("input, textarea, select, button, [contenteditable='true']"),
+  );
+}
+function bindDashboardHotkeys(actions) {
+  if (dashboardHotkeyHandler) {
+    document.removeEventListener("keydown", dashboardHotkeyHandler);
+  }
+  dashboardHotkeyHandler = (event) => {
+    if (!(location.hash === "#/" || location.hash.startsWith("#/?"))) return;
+    if (isEditableTarget(event.target) && event.key !== "Escape") return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === "/" || event.key === "?") {
+      event.preventDefault();
+      if (event.key === "?") {
+        actions.showShortcuts();
+        return;
+      }
+      actions.focusSearch();
+      return;
+    }
+    if (event.key === "s") {
+      event.preventDefault();
+      actions.saveView();
+      return;
+    }
+    if (event.key === "l") {
+      event.preventDefault();
+      actions.copyLink();
+      return;
+    }
+    if (event.key === "c") {
+      event.preventDefault();
+      actions.clearFilters();
+      return;
+    }
+    const lensByKey = {
+      "1": "all",
+      "2": "open",
+      "3": "overdue",
+      "4": "dueSoon",
+    };
+    if (lensByKey[event.key]) {
+      event.preventDefault();
+      actions.setLens(lensByKey[event.key]);
+    }
+  };
+  document.addEventListener("keydown", dashboardHotkeyHandler);
+}
 function status(value) {
   return `<span class="status ${esc(value)}">${esc(label(value))}</span>`;
 }
@@ -262,6 +313,22 @@ function openModal({
   };
   modal.showModal();
 }
+function openNoticeModal({
+  title,
+  eyebrow = "Notice",
+  body,
+  submit = "Close",
+}) {
+  document.querySelector("#modalTitle").textContent = title;
+  document.querySelector("#modalEyebrow").textContent = eyebrow;
+  document.querySelector("#modalBody").innerHTML = body;
+  document.querySelector("#modalSubmit").textContent = submit;
+  modalForm.onsubmit = (e) => {
+    e.preventDefault();
+    modal.close();
+  };
+  modal.showModal();
+}
 function setChrome(name, routeName) {
   document.querySelector("#crumb").textContent = name;
   document
@@ -302,7 +369,7 @@ async function dashboard(routeParams = new URLSearchParams()) {
   };
   const queueList = (items) =>
     `<div class="record-list">${items.map((item) => `<div class="record"><div><h4>${esc(item.case_id)} · ${esc(item.title)}</h4><p>${esc(item.detail)}${item.due_date ? ` · Due ${fmtDate(item.due_date)}` : ""}</p></div><div class="record-actions">${status(item.priority)}<span class="subtle">${esc(item.kind)}</span></div></div>`).join("") || '<div class="empty"><strong>No items</strong>Nothing is queued for this bucket.</div>'}</div>`;
-  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><div class="page-head-actions"><button class="secondary" data-action="save-view">Save view</button><button class="secondary" data-action="copy-link">Copy link</button><button class="secondary" data-action="refresh">Refresh</button></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Across all cases</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Needs attention</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p data-dashboard-summary>${esc(dashboardFilterSummary(filters))}</p></div><div class="filter-row"><input class="filter" id="caseSearch" value="${esc(filters.q)}" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}" ${filters.stage === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all" ${filters.due === "all" ? "selected" : ""}>All due states</option><option value="overdue" ${filters.due === "overdue" ? "selected" : ""}>Overdue only</option><option value="due_soon" ${filters.due === "due_soon" ? "selected" : ""}>Due in 7 days</option></select><label class="check inline"><input type="checkbox" id="activeOnly" ${filters.activeOnly ? "checked" : ""}> Open only</label><button class="secondary" data-action="reset-filters">Reset</button></div></div><div class="filter-toolbar"><div class="chip-row">${[
+  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><div class="page-head-actions"><button class="secondary" data-action="save-view">Save view</button><button class="secondary" data-action="copy-link">Copy link</button><button class="secondary" data-action="shortcuts">Shortcuts</button><button class="secondary" data-action="refresh">Refresh</button></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Across all cases</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Needs attention</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p data-dashboard-summary>${esc(dashboardFilterSummary(filters))}</p></div><div class="filter-row"><input class="filter" id="caseSearch" value="${esc(filters.q)}" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}" ${filters.stage === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all" ${filters.due === "all" ? "selected" : ""}>All due states</option><option value="overdue" ${filters.due === "overdue" ? "selected" : ""}>Overdue only</option><option value="due_soon" ${filters.due === "due_soon" ? "selected" : ""}>Due in 7 days</option></select><label class="check inline"><input type="checkbox" id="activeOnly" ${filters.activeOnly ? "checked" : ""}> Open only</label><button class="secondary" data-action="reset-filters">Reset</button></div></div><div class="filter-toolbar"><div class="chip-row">${[
     ["all", "All cases"],
     ["open", "Open only"],
     ["overdue", "Overdue"],
@@ -358,6 +425,29 @@ async function dashboard(routeParams = new URLSearchParams()) {
     saveDashboardFilters(next);
     dashboard();
   };
+  const dashboardActions = {
+    focusSearch: () => document.querySelector("#caseSearch")?.focus(),
+    saveView: () => document.querySelector("[data-action=save-view]")?.click(),
+    copyLink: () => document.querySelector("[data-action=copy-link]")?.click(),
+    clearFilters: () =>
+      setFilters({ q: "", stage: "all", due: "all", activeOnly: false }),
+    setLens: (lens) =>
+      setFilters(
+        {
+          all: { q: "", stage: "all", due: "all", activeOnly: false },
+          open: { q: "", stage: "all", due: "all", activeOnly: true },
+          overdue: { q: "", stage: "all", due: "overdue", activeOnly: true },
+          dueSoon: { q: "", stage: "all", due: "due_soon", activeOnly: true },
+        }[lens] || { q: "", stage: "all", due: "all", activeOnly: false },
+      ),
+    showShortcuts: () =>
+      openNoticeModal({
+        title: "Dashboard shortcuts",
+        eyebrow: "Caseload command center",
+        submit: "Done",
+        body: `<div class="shortcut-grid"><div><strong>/</strong><span>Focus the case search</span></div><div><strong>1</strong><span>All cases</span></div><div><strong>2</strong><span>Open only</span></div><div><strong>3</strong><span>Overdue</span></div><div><strong>4</strong><span>Due in 7 days</span></div><div><strong>s</strong><span>Save current view</span></div><div><strong>l</strong><span>Copy share link</span></div><div><strong>c</strong><span>Clear filters</span></div><div><strong>?</strong><span>Open this help</span></div></div>`,
+      }),
+  };
   document.querySelector("[data-action=refresh]").onclick = route;
   document.querySelector("[data-action=copy-link]").onclick = async () => {
     try {
@@ -399,13 +489,14 @@ async function dashboard(routeParams = new URLSearchParams()) {
       },
     });
   };
+  document.querySelector("[data-action=shortcuts]").onclick = dashboardActions.showShortcuts;
   document.querySelector("#caseSearch").oninput = apply;
   document.querySelector("#caseFilter").onchange = apply;
   document.querySelector("#dueFilter").onchange = apply;
   document.querySelector("#activeOnly").onchange = apply;
   document.querySelectorAll("[data-lens]").forEach(
     (button) =>
-      (button.onclick = () => setFilters(lensFilters[button.dataset.lens])),
+      (button.onclick = () => dashboardActions.setLens(button.dataset.lens)),
   );
   document.querySelectorAll("[data-view-load]").forEach(
     (button) =>
@@ -424,6 +515,7 @@ async function dashboard(routeParams = new URLSearchParams()) {
         dashboard();
       }),
   );
+  bindDashboardHotkeys(dashboardActions);
   bindCaseRows();
 }
 function caseTable(cases) {
@@ -1523,6 +1615,10 @@ async function alerts() {
 
 async function route() {
   try {
+    if (dashboardHotkeyHandler) {
+      document.removeEventListener("keydown", dashboardHotkeyHandler);
+      dashboardHotkeyHandler = null;
+    }
     await loadMeta();
     await refreshAlertCount();
     const { parts, params } = readRouteState();
