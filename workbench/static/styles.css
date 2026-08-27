@@ -1042,9 +1042,11 @@ dialog footer {
   }
   .case-controls {
     width: 100%;
+    flex-wrap: wrap;
   }
-  .case-controls select {
-    flex: 1;
+  .case-controls > * {
+    flex: 1 1 140px;
+    min-width: 0;
   }
   .side-column {
     display: block;
