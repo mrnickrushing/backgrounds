@@ -2,13 +2,21 @@
 
 Purpose: reduce administrative load in CDCR background-investigation work without replacing eSOPH, agency policy, investigator judgment, or approved systems. All examples and tests use fictional, non-PII data.
 
-Status as of 2026-08-27: Waves 1 through 7 are merged to `main`. Wave 8 adds dashboard keyboard shortcuts and is pending merge.
+Status as of 2026-08-27: Waves 1 through 8 are merged to `main`. Wave 9 adds portable saved views and is pending merge.
 
 - Wave 1 / 2 / 3 merged in PR #12, merge commit `588dc00`
 - Wave 4 merged in PR #13, merge commit `0a638ef`
 - Wave 5 merged in PR #14, merge commit `810b109`
 - Wave 6 merged in PR #16, merge commit `2cdfb16`
 - Wave 7 merged in PR #17, merge commit `1d58cdc`
+- Wave 8 merged in PR #18, merge commit `83525c7`
+
+## Wave 9 — Portable saved views
+
+- Export the command-center filters and saved views to JSON so the current workload slice can move between browsers or machines.
+- Import exported views from a file or pasted JSON, merging them into local storage with duplicate suppression.
+- Optional filter restore during import so a transferred dashboard can reopen on the same queue slice when needed.
+- Gates: browser walkthrough, export/import round-trip, duplicate suppression, mobile-width check.
 
 ## Wave 8 — Dashboard keyboard shortcuts
 

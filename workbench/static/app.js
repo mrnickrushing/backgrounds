@@ -206,6 +206,45 @@ async function copyShareLink() {
   document.execCommand("copy");
   node.remove();
 }
+function triggerDownload(filename, content, type = "application/json") {
+  const blob = new Blob([content], { type });
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(href);
+}
+function extractDashboardViews(payload) {
+  const list = Array.isArray(payload) ? payload : payload?.views;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((view, index) => {
+      const filters = view?.filters ? normalizeDashboardFilters(view.filters) : null;
+      const name = String(view?.name || "").trim();
+      if (!filters || !name) return null;
+      return {
+        id: `view-${Date.now().toString(36)}-${index.toString(36)}`,
+        name,
+        filters,
+      };
+    })
+    .filter(Boolean);
+}
+function mergeDashboardViews(existing, imported) {
+  const next = [...existing];
+  for (const view of imported) {
+    const duplicate = next.find(
+      (item) =>
+        item.name.trim().toLowerCase() === view.name.trim().toLowerCase() &&
+        filtersEqual(item.filters, view.filters),
+    );
+    if (!duplicate) next.push(view);
+  }
+  return next.slice(0, 12);
+}
 function isEditableTarget(target) {
   return Boolean(
     target?.closest?.("input, textarea, select, button, [contenteditable='true']"),
@@ -231,6 +270,16 @@ function bindDashboardHotkeys(actions) {
     if (event.key === "s") {
       event.preventDefault();
       actions.saveView();
+      return;
+    }
+    if (event.key === "e") {
+      event.preventDefault();
+      actions.exportViews();
+      return;
+    }
+    if (event.key === "i") {
+      event.preventDefault();
+      actions.importViews();
       return;
     }
     if (event.key === "l") {
@@ -271,6 +320,9 @@ function field(name, title, type = "text", opts = {}) {
   if (type === "textarea") {
     return `<div class="field${full}"><label for="f-${name}">${esc(title)}</label><textarea id="f-${name}" name="${name}" ${opts.required ? "required" : ""} placeholder="${esc(opts.placeholder || "")}">${esc(opts.value || "")}</textarea></div>`;
   }
+  if (type === "file") {
+    return `<div class="field${full}"><label for="f-${name}">${esc(title)}</label><input id="f-${name}" name="${name}" type="file" ${opts.required ? "required" : ""} ${opts.accept ? `accept="${esc(opts.accept)}"` : ""}></div>`;
+  }
   if (type === "checkbox") {
     return `<label class="check${full}"><input type="checkbox" name="${name}" ${opts.checked ? "checked" : ""}> ${esc(title)}</label>`;
   }
@@ -281,6 +333,7 @@ function openModal({
   eyebrow = "Add record",
   body,
   submit = "Save",
+  success = "Saved",
   onSubmit,
 }) {
   document.querySelector("#modalTitle").textContent = title;
@@ -303,7 +356,7 @@ function openModal({
       button.disabled = true;
       await onSubmit(data);
       modal.close();
-      toast("Saved");
+      toast(success);
       await route();
     } catch (err) {
       toast(err.message);
@@ -369,7 +422,7 @@ async function dashboard(routeParams = new URLSearchParams()) {
   };
   const queueList = (items) =>
     `<div class="record-list">${items.map((item) => `<div class="record"><div><h4>${esc(item.case_id)} · ${esc(item.title)}</h4><p>${esc(item.detail)}${item.due_date ? ` · Due ${fmtDate(item.due_date)}` : ""}</p></div><div class="record-actions">${status(item.priority)}<span class="subtle">${esc(item.kind)}</span></div></div>`).join("") || '<div class="empty"><strong>No items</strong>Nothing is queued for this bucket.</div>'}</div>`;
-  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><div class="page-head-actions"><button class="secondary" data-action="save-view">Save view</button><button class="secondary" data-action="copy-link">Copy link</button><button class="secondary" data-action="shortcuts">Shortcuts</button><button class="secondary" data-action="refresh">Refresh</button></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Across all cases</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Needs attention</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p data-dashboard-summary>${esc(dashboardFilterSummary(filters))}</p></div><div class="filter-row"><input class="filter" id="caseSearch" value="${esc(filters.q)}" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}" ${filters.stage === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all" ${filters.due === "all" ? "selected" : ""}>All due states</option><option value="overdue" ${filters.due === "overdue" ? "selected" : ""}>Overdue only</option><option value="due_soon" ${filters.due === "due_soon" ? "selected" : ""}>Due in 7 days</option></select><label class="check inline"><input type="checkbox" id="activeOnly" ${filters.activeOnly ? "checked" : ""}> Open only</label><button class="secondary" data-action="reset-filters">Reset</button></div></div><div class="filter-toolbar"><div class="chip-row">${[
+  app.innerHTML = `<div class="page-head"><div><p class="eyebrow">Caseload command center</p><h1>Active caseload</h1><p>${esc(roleLabel)} · Track required work, follow-ups, and supervisory review.</p></div><div class="page-head-actions"><button class="secondary" data-action="save-view">Save view</button><button class="secondary" data-action="export-views">Export views</button><button class="secondary" data-action="import-views">Import views</button><button class="secondary" data-action="copy-link">Copy link</button><button class="secondary" data-action="shortcuts">Shortcuts</button><button class="secondary" data-action="refresh">Refresh</button></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Assigned cases</div><div class="stat-value">${total}</div><div class="stat-detail">${open} currently active</div></div><div class="stat"><div class="stat-label">Open inquiries</div><div class="stat-value">${inq}</div><div class="stat-detail">Across all cases</div></div><div class="stat"><div class="stat-label">Overdue follow-ups</div><div class="stat-value">${overdue}</div><div class="stat-detail">Needs attention</div></div><div class="stat"><div class="stat-label">Risk flags</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">${roleLabel}</div></div></div><section class="panel"><div class="panel-head"><div><h2>Command center</h2><p>${esc(state.queue.role_card.detail)}</p></div><span class="subtle">${state.queue.role_card.title}</span></div><div class="stat-grid"><div class="stat"><div class="stat-label">Today</div><div class="stat-value">${state.queue.today.length}</div><div class="stat-detail">Immediate items</div></div><div class="stat"><div class="stat-label">This week</div><div class="stat-value">${state.queue.this_week.length}</div><div class="stat-detail">Near-term items</div></div><div class="stat"><div class="stat-label">Risk</div><div class="stat-value">${state.queue.risk.length}</div><div class="stat-detail">Missing releases, responses, and returns</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Today</h2><p>Immediate action queue.</p></div><span class="subtle">${state.queue.today.length} queued</span></div>${queueList(state.queue.today)}</section><section class="panel"><div class="panel-head"><div><h2>This week</h2><p>Work due within the next seven days.</p></div><span class="subtle">${state.queue.this_week.length} queued</span></div>${queueList(state.queue.this_week)}</section><section class="panel"><div class="panel-head"><div><h2>Risk watch</h2><p>Missing releases, pending source responses, and supervisor returns.</p></div><span class="subtle">${state.queue.risk.length} queued</span></div>${queueList(state.queue.risk)}</section><section class="panel"><div class="panel-head"><div><h2>Case queue</h2><p data-dashboard-summary>${esc(dashboardFilterSummary(filters))}</p></div><div class="filter-row"><input class="filter" id="caseSearch" value="${esc(filters.q)}" placeholder="Search cases or tags"><select class="filter" id="caseFilter"><option value="all">All stages</option>${state.meta.case_statuses.map((x) => `<option value="${x}" ${filters.stage === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select><select class="filter" id="dueFilter"><option value="all" ${filters.due === "all" ? "selected" : ""}>All due states</option><option value="overdue" ${filters.due === "overdue" ? "selected" : ""}>Overdue only</option><option value="due_soon" ${filters.due === "due_soon" ? "selected" : ""}>Due in 7 days</option></select><label class="check inline"><input type="checkbox" id="activeOnly" ${filters.activeOnly ? "checked" : ""}> Open only</label><button class="secondary" data-action="reset-filters">Reset</button></div></div><div class="filter-toolbar"><div class="chip-row">${[
     ["all", "All cases"],
     ["open", "Open only"],
     ["overdue", "Overdue"],
@@ -379,7 +432,7 @@ async function dashboard(routeParams = new URLSearchParams()) {
       ([key, text]) =>
         `<button class="chip ${filtersEqual(filters, lensFilters[key]) ? "active" : ""}" data-lens="${key}">${text}</button>`,
     )
-    .join("")}</div><div class="saved-view-controls"><span class="subtle">${state.dashboard.views.length} saved locally</span></div></div><div class="saved-view-row">${state.dashboard.views.length ? state.dashboard.views.map((view) => `<div class="saved-view ${filtersEqual(filters, view.filters) ? "active" : ""}"><button class="saved-view-load" data-view-load="${esc(view.id)}"><strong>${esc(view.name)}</strong><span>${esc(dashboardFilterSummary(view.filters))}</span></button><button class="quiet saved-view-delete" data-view-delete="${esc(view.id)}">Delete</button></div>`).join("") : '<div class="empty compact"><strong>No saved views yet</strong>Capture the current filters so this browser can return to them instantly.</div>'}</div><div id="caseTable">${caseTable(state.cases)}</div></section>`;
+    .join("")}</div><div class="saved-view-controls"><span class="subtle">${state.dashboard.views.length} saved locally</span><div class="saved-view-actions"><button class="secondary" data-action="export-views">Export</button><button class="secondary" data-action="import-views">Import</button></div></div></div><div class="saved-view-row">${state.dashboard.views.length ? state.dashboard.views.map((view) => `<div class="saved-view ${filtersEqual(filters, view.filters) ? "active" : ""}"><button class="saved-view-load" data-view-load="${esc(view.id)}"><strong>${esc(view.name)}</strong><span>${esc(dashboardFilterSummary(view.filters))}</span></button><button class="quiet saved-view-delete" data-view-delete="${esc(view.id)}">Delete</button></div>`).join("") : '<div class="empty compact"><strong>No saved views yet</strong>Capture the current filters so this browser can return to them instantly.</div>'}</div><div id="caseTable">${caseTable(state.cases)}</div></section>`;
   const syncDashboardIndicators = () => {
     const current = state.dashboard.filters;
     document.querySelector("[data-dashboard-summary]") &&
@@ -428,6 +481,8 @@ async function dashboard(routeParams = new URLSearchParams()) {
   const dashboardActions = {
     focusSearch: () => document.querySelector("#caseSearch")?.focus(),
     saveView: () => document.querySelector("[data-action=save-view]")?.click(),
+    exportViews: () => document.querySelector("[data-action=export-views]")?.click(),
+    importViews: () => document.querySelector("[data-action=import-views]")?.click(),
     copyLink: () => document.querySelector("[data-action=copy-link]")?.click(),
     clearFilters: () =>
       setFilters({ q: "", stage: "all", due: "all", activeOnly: false }),
@@ -445,7 +500,7 @@ async function dashboard(routeParams = new URLSearchParams()) {
         title: "Dashboard shortcuts",
         eyebrow: "Caseload command center",
         submit: "Done",
-        body: `<div class="shortcut-grid"><div><strong>/</strong><span>Focus the case search</span></div><div><strong>1</strong><span>All cases</span></div><div><strong>2</strong><span>Open only</span></div><div><strong>3</strong><span>Overdue</span></div><div><strong>4</strong><span>Due in 7 days</span></div><div><strong>s</strong><span>Save current view</span></div><div><strong>l</strong><span>Copy share link</span></div><div><strong>c</strong><span>Clear filters</span></div><div><strong>?</strong><span>Open this help</span></div></div>`,
+        body: `<div class="shortcut-grid"><div><strong>/</strong><span>Focus the case search</span></div><div><strong>1</strong><span>All cases</span></div><div><strong>2</strong><span>Open only</span></div><div><strong>3</strong><span>Overdue</span></div><div><strong>4</strong><span>Due in 7 days</span></div><div><strong>s</strong><span>Save current view</span></div><div><strong>e</strong><span>Export saved views</span></div><div><strong>i</strong><span>Import saved views</span></div><div><strong>l</strong><span>Copy share link</span></div><div><strong>c</strong><span>Clear filters</span></div><div><strong>?</strong><span>Open this help</span></div></div>`,
       }),
   };
   document.querySelector("[data-action=refresh]").onclick = route;
@@ -489,6 +544,58 @@ async function dashboard(routeParams = new URLSearchParams()) {
       },
     });
   };
+  document.querySelectorAll("[data-action=export-views]").forEach(
+    (button) =>
+      (button.onclick = () => {
+    const exportPayload = {
+      schema: "backgrounds.dashboard.export/v1",
+      app: "backgrounds",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      scope: dashboardScope(),
+      filters: state.dashboard.filters,
+      views: state.dashboard.views,
+    };
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    triggerDownload(
+      `backgrounds-dashboard-${stamp}.json`,
+      `${JSON.stringify(exportPayload, null, 2)}\n`,
+    );
+    toast("Saved views exported");
+      }),
+  );
+  document.querySelectorAll("[data-action=import-views]").forEach(
+    (button) =>
+      (button.onclick = () => {
+        openModal({
+      title: "Import saved views",
+      eyebrow: "Caseload command center",
+      body: `${field("import_file", "Export file", "file", { full: true, accept: ".json,application/json" })}${field("import_json", "Or paste export JSON", "textarea", { full: true, placeholder: "Paste the JSON from another browser or device" })}${field("apply_filters", "Apply exported filters after import", "checkbox", { full: true, checked: true })}<p class="form-note">Imported views merge into local storage. Matching names plus matching filters are skipped.</p>`,
+      submit: "Import views",
+      success: "Views imported",
+      onSubmit: async (data) => {
+        let raw = String(data.import_json || "").trim();
+        if (!raw) {
+          const file = modalForm.querySelector('input[name="import_file"]')?.files?.[0];
+          if (file) raw = (await file.text()).trim();
+        }
+        if (!raw) throw new Error("Choose a JSON file or paste an export");
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          throw new Error("The import JSON is not valid");
+        }
+        const importedViews = extractDashboardViews(parsed);
+        if (!importedViews.length) throw new Error("No saved views were found");
+        saveDashboardViews(mergeDashboardViews(state.dashboard.views, importedViews));
+        if (data.apply_filters && parsed?.filters) {
+          saveDashboardFilters(parsed.filters);
+        }
+      },
+    });
+      }),
+  );
   document.querySelector("[data-action=shortcuts]").onclick = dashboardActions.showShortcuts;
   document.querySelector("#caseSearch").oninput = apply;
   document.querySelector("#caseFilter").onchange = apply;
