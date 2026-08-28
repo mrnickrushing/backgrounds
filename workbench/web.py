@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from .core import (
     AREAS,
     AREA_LABELS,
+    AREA_STATUSES,
     CASE_STATUSES,
     DOCUMENT_STATUSES,
     DIMENSIONS,
@@ -595,6 +596,11 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 collection[parts[3]]["narrative"] = body.get("narrative", collection[parts[3]]["narrative"])
                 collection[parts[3]]["source_ids"] = body.get("source_ids", collection[parts[3]]["source_ids"])
                 if parts[2] == "areas" and "status" in body:
+                    # Checked the way document status already is: this value is
+                    # stored and later rendered into the caseload markup, so an
+                    # unvalidated string is a stored-XSS vector, not just bad data.
+                    if body["status"] not in AREA_STATUSES:
+                        raise WorkbenchError("invalid area status")
                     collection[parts[3]]["status"] = body["status"]
                 append_activity(data, "section_updated", f"{parts[2]}:{parts[3]}")
             elif len(parts) == 3 and parts[2] == "bias":
