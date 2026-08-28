@@ -213,3 +213,98 @@ class WorkbenchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AreaStatusWriteTests(unittest.TestCase):
+    """A stored area status is rendered straight into the caseload markup, so
+    the write path has to constrain it the way document status already does."""
+
+    def _server(self, directory):
+        from http.server import ThreadingHTTPServer
+
+        from workbench.web import WorkbenchHandler
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), WorkbenchHandler)
+        server.data_root = directory
+        server.store = WorkbenchStore(directory)
+        server.quiet = True
+        server.auth_username = ""
+        server.auth_password = ""
+        server.session_secret = ""
+        server.version = "test"
+        return server
+
+    def _patch(self, port, case_id, payload):
+        import json
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/cases/{case_id}/areas/{AREAS[0]}",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="PATCH",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def test_area_status_must_be_one_of_the_known_statuses(self):
+        import threading
+
+        with tempfile.TemporaryDirectory() as directory:
+            server = self._server(directory)
+            server.store.ensure_bootstrap_user("", "")
+            server.store.save_case(
+                new_case("XSS-1"), {"id": None, "username": "local"}, "case_created"
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = server.server_port
+            try:
+                ok, body = self._patch(port, "XSS-1", {"status": "complete"})
+                self.assertEqual(ok, 200)
+                self.assertEqual(body["areas"][AREAS[0]]["status"], "complete")
+
+                # The payload that made this a stored-XSS vector: the status is
+                # interpolated into `class="area-card ${...}"` in the caseload
+                # markup, so a quote here would break out of the attribute.
+                injection = '" onmouseover="alert(1)'
+                status, body = self._patch(port, "XSS-1", {"status": injection})
+                self.assertEqual(status, 400)
+                self.assertIn("invalid area status", body["error"])
+
+                stored = server.store.load_case("XSS-1")
+                self.assertEqual(stored["areas"][AREAS[0]]["status"], "complete")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_narrative_still_saves_without_a_status(self):
+        """Behaviour preserved: the status key is optional, as before."""
+        import threading
+
+        with tempfile.TemporaryDirectory() as directory:
+            server = self._server(directory)
+            server.store.ensure_bootstrap_user("", "")
+            server.store.save_case(
+                new_case("XSS-2"), {"id": None, "username": "local"}, "case_created"
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, body = self._patch(
+                    server.server_port, "XSS-2", {"narrative": "Verified in person."}
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    body["areas"][AREAS[0]]["narrative"], "Verified in person."
+                )
+                self.assertEqual(body["areas"][AREAS[0]]["status"], "not_started")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)

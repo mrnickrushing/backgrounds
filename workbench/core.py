@@ -78,6 +78,7 @@ TIMELINE_CATEGORY_LABELS = {
     "legal": "Legal",
     "other": "Other",
 }
+AREA_STATUSES = ("not_started", "in_progress", "complete", "not_applicable")
 DOCUMENT_STATUSES = ("needed", "requested", "received", "verified", "returned", "not_applicable")
 DOCUMENT_STATUS_LABELS = {
     "needed": "Needed",
@@ -775,7 +776,7 @@ def validate_case_package(value: Any) -> dict[str, Any]:
     if set(data["areas"]) != set(AREAS) or set(data["dimensions"]) != set(DIMENSIONS):
         raise WorkbenchError("case package does not match the current investigation structure")
     for area in data["areas"].values():
-        if not isinstance(area, dict) or area.get("status") not in {"not_started", "in_progress", "complete", "not_applicable"} or not isinstance(area.get("narrative"), str) or not isinstance(area.get("source_ids"), list):
+        if not isinstance(area, dict) or area.get("status") not in AREA_STATUSES or not isinstance(area.get("narrative"), str) or not isinstance(area.get("source_ids"), list):
             raise WorkbenchError("case package contains an invalid investigation area")
     for dimension in data["dimensions"].values():
         if not isinstance(dimension, dict) or not isinstance(dimension.get("narrative"), str) or not isinstance(dimension.get("source_ids"), list):

@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # The workflow pins actions to commit SHAs; without this the pins would
+  # simply freeze at whatever was current the day they were written.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
