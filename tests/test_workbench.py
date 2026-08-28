@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -308,3 +311,50 @@ class AreaStatusWriteTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5)
+
+
+class EntrypointTests(unittest.TestCase):
+    """The container starts as root only to hand the mounted volume to the
+    runtime user. The privileged half needs root to exercise, so what is
+    asserted here is everything that holds without it."""
+
+    ENTRYPOINT = Path(__file__).resolve().parent.parent / "docker-entrypoint.py"
+
+    def _module(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("entrypoint", self.ENTRYPOINT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_refuses_to_run_without_a_command(self):
+        self.assertEqual(self._module().main([]), 2)
+
+    def test_handing_over_a_missing_directory_is_not_an_error(self):
+        module = self._module()
+        module.hand_over("/nonexistent/data", 0, 0)
+
+    def test_ownership_changes_it_cannot_make_are_skipped(self):
+        """A file it cannot chown must not abort the startup path."""
+        module = self._module()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "case.db"
+            target.write_text("x")
+            module.own(str(target), 0, 0) if os.geteuid() == 0 else module.own(
+                str(target), 65534, 65534
+            )
+            self.assertTrue(target.is_file())
+
+    def test_unprivileged_startup_execs_without_touching_ownership(self):
+        """The common path in CI: already non-root, so it just execs."""
+        if os.geteuid() == 0:
+            self.skipTest("covered by the privileged path, not this one")
+        result = subprocess.run(
+            [sys.executable, str(self.ENTRYPOINT), sys.executable, "-c", "print('ran')"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ran", result.stdout)

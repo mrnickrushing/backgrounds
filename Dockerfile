@@ -10,11 +10,15 @@ RUN groupadd --system --gid 10001 workbench \
 WORKDIR /app
 COPY --chown=workbench:workbench . /app
 
-# The case database and attachments live on a mounted volume; create the
-# mountpoint owned by the runtime user so the service can write without root.
 RUN mkdir -p /data && chown workbench:workbench /data
 
-USER workbench
+# The service never runs as root: the entrypoint starts privileged only long
+# enough to hand the mounted volume to the workbench user, then drops to it and
+# execs CMD. USER is deliberately not set — a volume is mounted over /data after
+# the build, so the chown above cannot reach it, and an upgrade from an earlier
+# root-running image leaves a database, attachments and backups at mode 0600
+# owned by root that an unprivileged process could not open at all.
+ENTRYPOINT ["python3", "/app/docker-entrypoint.py"]
 
 EXPOSE 8765
 
